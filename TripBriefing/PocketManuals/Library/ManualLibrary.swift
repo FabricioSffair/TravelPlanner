@@ -152,6 +152,7 @@ final class ManualLibrary {
             if document.isSample { removedSampleIDs.insert(id) }
             pending.removeAll { $0 == id }
             try? FileManager.default.removeItem(at: Self.fileURL(for: id))
+            SpotlightIndex.removeManual(id: id)
         }
         documents.removeAll { ids.contains($0.id) }
         save()
@@ -253,6 +254,9 @@ final class ManualLibrary {
         if let position = documents.firstIndex(where: { $0.id == id }) {
             documents[position].indexState = state
             save()
+            if case .indexed = state {
+                SpotlightIndex.indexManual(id: id, title: document.title)
+            }
         } else {
             // Deleted while indexing: the run may have written pages after the delete removed them.
             try? await index.remove(manualID: id)

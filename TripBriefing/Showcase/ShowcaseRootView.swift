@@ -6,6 +6,7 @@
 //  either showcase can switch to the other one.
 //
 
+import CoreSpotlight
 import SwiftUI
 
 struct ShowcaseRootView: View {
@@ -13,6 +14,8 @@ struct ShowcaseRootView: View {
     @Environment(ProviderSettings.self) private var settings
     @Environment(ManualLibrary.self) private var library
     @State private var tab: ShowcaseTab = .primary
+    /// The trip note or manual page a tapped Spotlight result opens.
+    @State private var spotlightRoute: SpotlightRoute?
 
     var body: some View {
         Group {
@@ -35,5 +38,27 @@ struct ShowcaseRootView: View {
         .onChange(of: settings.embeddingOpenAIKey) { _, key in
             Task { await library.updateOpenAIKey(key) }
         }
+        .task { SpotlightIndex.syncAtLaunch(documents: library.documents) }
+        .onContinueUserActivity(CSSearchableItemActionType, perform: openSpotlightResult)
+        .sheet(item: $spotlightRoute) { route in
+            switch route {
+            case .tripNote(let note, let destination):
+                TripNoteSheet(note: note, destination: destination)
+            case .manualPage(let page):
+                ManualPageViewer(reference: page)
+            }
+        }
+    }
+
+    /// Switches to the result's showcase and opens the note or page over it.
+    private func openSpotlightResult(_ activity: NSUserActivity) {
+        guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+              let route = SpotlightIndex.route(for: identifier, documents: library.documents)
+        else { return }
+        switch route {
+        case .tripNote: showcase.selected = .tripBriefing
+        case .manualPage: showcase.selected = .pocketManuals
+        }
+        spotlightRoute = route
     }
 }

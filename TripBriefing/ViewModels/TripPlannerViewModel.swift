@@ -344,7 +344,9 @@ final class TripPlannerViewModel {
                 guard let self, token == self.guideRunToken else { return }
                 self.tripNotes = indexed
                 self.notesTripDays = days
-                TripNotesArchive(destination: destination, tripDays: days, notes: notes).save()
+                let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes)
+                archive.save()
+                SpotlightIndex.indexTrip(archive)
                 self.tripNotesStatus = "Ready · \(indexed.noteCount) notes · \(indexed.embedderLabel)"
                 AppLog.info("Trip notes indexed", properties: ["Notes": "\(indexed.noteCount)", "Embedder": indexed.embedderLabel])
             } catch {
