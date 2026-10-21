@@ -72,12 +72,15 @@ final class AskViewModel {
 
     // MARK: Run
 
-    func ask(settings: ProviderSettings, preferences: ManualsPreferences, library: ManualLibrary) {
+    /// - Returns: the run, done when the answer and verdicts are in; `nil` when nothing ran and
+    ///   `errorMessage` says why.
+    @discardableResult
+    func ask(settings: ProviderSettings, preferences: ManualsPreferences, library: ManualLibrary) -> Task<Void, Never>? {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isRunning, !question.isEmpty else { return }
+        guard !isRunning, !question.isEmpty else { return nil }
         if let reason = settings.agentsUnavailableReason {
             errorMessage = reason
-            return
+            return nil
         }
 
         let grounded = preferences.groundsAnswers
@@ -86,7 +89,7 @@ final class AskViewModel {
         if grounded {
             if case .unavailable(let reason)? = library.embedderStatus {
                 errorMessage = "Search is unavailable: \(reason)."
-                return
+                return nil
             }
             if let scopeID, !searchable.contains(where: { $0.id == scopeID }) {
                 self.scopeID = nil
@@ -95,7 +98,7 @@ final class AskViewModel {
                 scopeDescription = "the manual \"\(manual.title)\""
             } else if searchable.isEmpty {
                 errorMessage = "Nothing is indexed yet. Index a sample (or import a PDF) in the Library tab."
-                return
+                return nil
             } else {
                 scopeDescription = "the user's manuals (\(searchable.map(\.title).joined(separator: "; ")))"
             }
@@ -148,7 +151,7 @@ final class AskViewModel {
         ]
         let traceUpload = RailtownSetup.uploadTrace(of: flow)
 
-        Task { [weak self] in
+        return Task { [weak self] in
             defer {
                 RailtownSetup.finishTraceUpload(traceUpload)
                 self?.isRunning = false

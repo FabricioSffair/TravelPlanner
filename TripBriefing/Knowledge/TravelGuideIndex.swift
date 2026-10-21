@@ -507,27 +507,15 @@ actor TravelGuideLibrary {
         let embedder = selection.embedder
         timings.prepare = Date().timeIntervalSince(clock)
 
-        let city = WikivoyageClient.candidateTitles(for: destination).first ?? destination
-        let cityDirectory = cacheRoot.appendingPathComponent(Self.slug(city), isDirectory: true)
+        let cityDirectory = cityDirectory(for: destination)
         removeLegacyStore(in: cityDirectory)
         let directory = cityDirectory.appendingPathComponent(selection.cacheKey, isDirectory: true)
         let manifestURL = directory.appendingPathComponent("guide.json")
 
-        if let manifest = readManifest(at: manifestURL) {
-            if manifest.formatVersion == Self.indexFormatVersion,
-               manifest.embeddingModel == embedder.modelIdentifier,
-               let store = try? RTSRAGFileStore(directory: directory),
-               (try? await store.count(matching: [:])) ?? 0 > 0 {
-                return TravelGuide(
-                    city: manifest.city,
-                    articleTitle: manifest.articleTitle,
-                    articleURL: manifest.articleURL,
-                    sections: manifest.sections,
-                    embedderLabel: selection.label,
-                    fromCache: true,
-                    runtime: RTSRAGRetrievalRuntime(embedder: embedder, store: store)
-                )
-            }
+        if let guide = await storedGuide(in: directory, selection: selection) {
+            return guide
+        }
+        if readManifest(at: manifestURL) != nil {
             // Older format, another embedder, or unreadable: start clean.
             try? FileManager.default.removeItem(at: directory)
         }
@@ -620,6 +608,40 @@ actor TravelGuideLibrary {
             return RTSRAGLimits.defaultMaxChunkCharacters
         }
         return max(64, Int(Double(ceiling) * chunkBudgetFraction))
+    }
+
+    /// The guide for a destination when a complete store for the chosen embedder is already in
+    /// Caches; `nil` otherwise. Never fetches or embeds, so Siri does not wait for a download.
+    func cachedGuide(for destination: String, openAIKey: String? = nil) async throws -> TravelGuide? {
+        let selection = try await selectEmbedder(openAIKey: openAIKey)
+        let directory = cityDirectory(for: destination)
+            .appendingPathComponent(selection.cacheKey, isDirectory: true)
+        return await storedGuide(in: directory, selection: selection)
+    }
+
+    private func cityDirectory(for destination: String) -> URL {
+        let city = WikivoyageClient.candidateTitles(for: destination).first ?? destination
+        return cacheRoot.appendingPathComponent(Self.slug(city), isDirectory: true)
+    }
+
+    /// The store in `directory` when its manifest matches this format and embedder and it holds
+    /// entries.
+    private func storedGuide(in directory: URL, selection: Selection) async -> TravelGuide? {
+        guard let manifest = readManifest(at: directory.appendingPathComponent("guide.json")),
+              manifest.formatVersion == Self.indexFormatVersion,
+              manifest.embeddingModel == selection.embedder.modelIdentifier,
+              let store = try? RTSRAGFileStore(directory: directory),
+              (try? await store.count(matching: [:])) ?? 0 > 0
+        else { return nil }
+        return TravelGuide(
+            city: manifest.city,
+            articleTitle: manifest.articleTitle,
+            articleURL: manifest.articleURL,
+            sections: manifest.sections,
+            embedderLabel: selection.label,
+            fromCache: true,
+            runtime: RTSRAGRetrievalRuntime(embedder: selection.embedder, store: store)
+        )
     }
 
     /// Format 2 kept one store directly under the city directory. Stores now live one level

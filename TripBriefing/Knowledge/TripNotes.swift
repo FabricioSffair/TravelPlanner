@@ -18,7 +18,7 @@ import RailtracksSwift
 import RailtracksSwiftRAG
 
 /// One part of a finished briefing, as plain text.
-struct TripNote: Sendable, Hashable {
+struct TripNote: Codable, Sendable, Hashable {
     /// Short label for citations, e.g. "Weather" or "Plan · 2026-10-15".
     let part: String
     let text: String
@@ -208,6 +208,39 @@ extension TravelGuideLibrary {
             notes: notes,
             runtime: runtime
         )
+    }
+}
+
+// MARK: - Last trip on disk
+
+/// The latest briefing's notes, saved when they are indexed, so Siri and Spotlight can reach them
+/// after the app restarts. The vector store lives in Caches and can be purged, so only the notes
+/// are kept: `TravelGuideLibrary.tripNotes` embeds them again, which takes about a second.
+struct TripNotesArchive: Codable, Sendable {
+    let destination: String
+    /// "Day 1 = 2026-10-14", one per day of the trip.
+    let tripDays: [String]
+    let notes: [TripNote]
+
+    static var fileURL: URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TripNotes/last-trip.json")
+    }
+
+    static func load() -> TripNotesArchive? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(TripNotesArchive.self, from: data)
+    }
+
+    func save() {
+        do {
+            let url = Self.fileURL
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(self).write(to: url, options: .atomic)
+        } catch {
+            AppLog.warning("Trip notes not saved", properties: ["Reason": error.localizedDescription])
+        }
     }
 }
 

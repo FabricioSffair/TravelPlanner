@@ -17,6 +17,7 @@
 //
 
 import SwiftUI
+import AppIntents
 import Logging
 import RailtracksSwift
 import RailtownLogger
@@ -35,15 +36,25 @@ struct TripBriefingApp: App {
 
     init() {
         let settings = ProviderSettings()
-        _showcase = State(initialValue: ShowcaseSelection())
-        _settings = State(initialValue: settings)
-        _planner = State(initialValue: TripPlannerViewModel())
-        _translator = State(initialValue: PhotoTranslateViewModel())
+        let planner = TripPlannerViewModel()
         // The index's embedding fallback uses the shared OpenAI key, only when cloud embeddings are
         // allowed; ShowcaseRootView passes changes on.
-        _library = State(initialValue: ManualLibrary(index: ManualIndex(openAIKey: settings.embeddingOpenAIKey)))
-        _ask = State(initialValue: AskViewModel())
-        _manualsPreferences = State(initialValue: ManualsPreferences())
+        let library = ManualLibrary(index: ManualIndex(openAIKey: settings.embeddingOpenAIKey))
+        let ask = AskViewModel()
+        let manualsPreferences = ManualsPreferences()
+        _showcase = State(initialValue: ShowcaseSelection())
+        _settings = State(initialValue: settings)
+        _planner = State(initialValue: planner)
+        _translator = State(initialValue: PhotoTranslateViewModel())
+        _library = State(initialValue: library)
+        _ask = State(initialValue: ask)
+        _manualsPreferences = State(initialValue: manualsPreferences)
+        // The Siri and Shortcuts actions use these same instances: see AskIntents.swift.
+        AppDependencyManager.shared.add(dependency: settings)
+        AppDependencyManager.shared.add(dependency: planner)
+        AppDependencyManager.shared.add(dependency: library)
+        AppDependencyManager.shared.add(dependency: ask)
+        AppDependencyManager.shared.add(dependency: manualsPreferences)
 
         Self.bootstrapLogging()
         // Error logs, the SDK's own error reports and trace uploads, with the Conductr key from

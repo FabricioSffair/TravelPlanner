@@ -94,6 +94,9 @@ final class TripPlannerViewModel {
 
     /// This run's indexed briefing, and its guide when the guide was ready in time.
     private var tripNotes: TripNotes?
+    /// The days of the trip the notes came from, which can differ from `request` once it is edited
+    /// or after a restart.
+    private var notesTripDays: [String]?
     private var tripGuide: TravelGuide?
     private let answerNotesCollector = TripAnswerSourceCollector()
     private let answerGuideCollector = TravelGuideSourceCollector()
@@ -331,6 +334,7 @@ final class TripPlannerViewModel {
         // Trip details alone: no agent produced anything worth asking about.
         guard notes.count > 1 else { return }
         let destination = request.destination
+        let days = tripDays
         let library = guideLibrary
         let token = guideRunToken
         tripNotesStatus = "Indexing your briefing…"
@@ -339,6 +343,8 @@ final class TripPlannerViewModel {
                 let indexed = try await library.tripNotes(notes, destination: destination, openAIKey: openAIKey)
                 guard let self, token == self.guideRunToken else { return }
                 self.tripNotes = indexed
+                self.notesTripDays = days
+                TripNotesArchive(destination: destination, tripDays: days, notes: notes).save()
                 self.tripNotesStatus = "Ready · \(indexed.noteCount) notes · \(indexed.embedderLabel)"
                 AppLog.info("Trip notes indexed", properties: ["Notes": "\(indexed.noteCount)", "Embedder": indexed.embedderLabel])
             } catch {
@@ -379,12 +385,14 @@ final class TripPlannerViewModel {
 
     /// Sends `text` (or the draft) to the Trip Assistant, with the last few exchanges as context.
     /// Each send is its own flow attached to the call tree, so it shows as one more run.
-    func sendChat(_ text: String? = nil, settings: ProviderSettings) {
+    /// - Returns: the run, whose value is the finished reply; `nil` when nothing was sent.
+    @discardableResult
+    func sendChat(_ text: String? = nil, settings: ProviderSettings) -> Task<TripChatMessage?, Never>? {
         let question = (text ?? chatDraft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, canChat else { return }
+        guard !question.isEmpty, canChat else { return nil }
         if let reason = settings.agentsUnavailableReason {
             chatMessages.append(TripChatMessage(role: .notice, text: reason))
-            return
+            return nil
         }
 
         let history = chatMessages.historyPrompt()
@@ -400,7 +408,7 @@ final class TripPlannerViewModel {
         let guideCollector = answerGuideCollector
         let notes = tripNotes
         let guide = chatGuide
-        let days = tripDays
+        let days = notesTripDays ?? tripDays
         func assistant(on provider: RTSLLMProvider) -> RTSAgent {
             TripAgents.tripAssistant(
                 provider: provider,
@@ -430,7 +438,7 @@ final class TripPlannerViewModel {
         let started = Date()
         let traceUpload = RailtownSetup.uploadTrace(of: flow)
 
-        Task { [weak self] in
+        return Task { [weak self] in
             defer {
                 RailtownSetup.finishTraceUpload(traceUpload)
                 self?.isAnswering = false
@@ -468,7 +476,38 @@ final class TripPlannerViewModel {
                 message.isError = failed
                 message.sources = sources
             }
+            return self?.chatMessages.first { $0.id == reply.id }
         }
+    }
+
+    /// Gets the chat ready for Siri or Shortcuts, which usually start the app fresh: reloads the
+    /// latest briefing's notes from disk and the destination's guide from Caches, when they are
+    /// not loaded. Never downloads a guide.
+    /// - Returns: why the chat cannot answer, or `nil` when it can.
+    func prepareForIntent(settings: ProviderSettings) async -> String? {
+        if tripNotes == nil, let archive = TripNotesArchive.load() {
+            do {
+                tripNotes = try await guideLibrary.tripNotes(
+                    archive.notes,
+                    destination: archive.destination,
+                    openAIKey: settings.embeddingOpenAIKey
+                )
+                notesTripDays = archive.tripDays
+                if let tripNotes {
+                    tripNotesStatus = "Ready · \(tripNotes.noteCount) notes · \(tripNotes.embedderLabel)"
+                }
+            } catch {
+                AppLog.warning("Saved trip notes not indexed", properties: ["Reason": TravelGuideError.reason(for: error)])
+            }
+        }
+        if chatGuide == nil {
+            let destination = tripNotes?.destination ?? request.destination
+            chatGuide = try? await guideLibrary.cachedGuide(for: destination, openAIKey: settings.embeddingOpenAIKey)
+        }
+        guard tripNotes != nil || chatGuide != nil else {
+            return "There is no trip to ask about yet. Open Travel Assistant and build a briefing first."
+        }
+        return nil
     }
 
     func clearChat() {
@@ -624,6 +663,7 @@ final class TripPlannerViewModel {
         traceURL = nil
         elapsed = nil
         tripNotes = nil
+        notesTripDays = nil
         tripGuide = nil
         tripNotesStatus = nil
         // A new briefing replaces what the chat searches, so earlier answers no longer apply.
