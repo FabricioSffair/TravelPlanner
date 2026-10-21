@@ -412,7 +412,7 @@ private final class ProgressTracker: Sendable {
             case .loadFailed(let error):
                 state.loadFailure = "\(error)"
                 return nil
-            case .documentLoaded, .documentChunked, .batchEmbedded, .batchFailed:
+            case .documentLoaded, .documentChunked, .batchEmbedded, .batchFailed, .documentSwept:
                 return nil
             }
         }

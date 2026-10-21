@@ -34,7 +34,7 @@
       "location" : "https://github.com/RailtownAI/Railtracks-swift.git",
       "state" : {
         "branch" : "main",
-        "revision" : "8bbc4d24c14243423aa4560536d0375131133d1a"
+        "revision" : "0b055765c03d1589e7f892923cfe6852f77e70d8"
       }
     },
     {
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/RailtownAI/railtracks-swift-instrumentation-kit",
       "state" : {
-        "revision" : "2e282a7919995df8aa775928669548b84171cf68",
-        "version" : "1.0.0"
+        "revision" : "ffcb38103a594183ff45865233ca4d066e5de3c3",
+        "version" : "1.1.0"
       }
     },
     {
