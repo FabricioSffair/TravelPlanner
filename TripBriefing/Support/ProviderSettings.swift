@@ -79,7 +79,7 @@ final class ProviderSettings {
         didSet { UserDefaults.standard.set(fallsBackWhenContextFull, forKey: Self.contextFallbackDefaultsKey) }
     }
 
-    /// Lets the travel guide and manual indexes embed with OpenAI when Apple's on-device embedding
+    /// Lets the travel guide and trip indexes embed with OpenAI when Apple's on-device embedding
     /// model is missing. Off by default: without it, nothing is sent to OpenAI for indexing.
     var allowsCloudEmbeddings: Bool {
         didSet { UserDefaults.standard.set(allowsCloudEmbeddings, forKey: Self.cloudEmbeddingsDefaultsKey) }

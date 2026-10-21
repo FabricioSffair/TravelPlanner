@@ -2,7 +2,7 @@
 //  AskIntents.swift
 //  TripBriefing
 //
-//  Siri, Spotlight and Shortcuts actions for both showcases. Each runs the same agents as its
+//  Siri, Spotlight and Shortcuts actions. Each runs the same agents as the Chat
 //  tab, in the app process, through the view models the App struct registers with
 //  AppDependencyManager: the indexes live there, and a second copy would load the embedding
 //  model twice. The question and answer also show in the app afterwards.
@@ -50,11 +50,11 @@ struct AskTravelAssistantIntent: AppIntent {
         guard let run = planner.sendChat(question, settings: settings) else {
             return IntentAnswer.Reply("Travel Assistant could not take the question. Try again in a moment.")
         }
-        AppLog.info("Siri question sent", properties: ["Showcase": "Travel Assistant"])
+        AppLog.info("Siri question sent")
 
         switch await IntentAnswer.wait(for: run) {
         case .stillRunning:
-            return IntentAnswer.Reply(IntentAnswer.stillRunning(tab: "Chat in Travel Assistant"))
+            return IntentAnswer.Reply(IntentAnswer.stillRunning(tab: "Chat"))
         case .finished(let message):
             guard let message, !message.text.isEmpty else {
                 return IntentAnswer.Reply("Travel Assistant did not answer.")
@@ -67,100 +67,11 @@ struct AskTravelAssistantIntent: AppIntent {
     }
 }
 
-// MARK: - Pocket Manuals
-
-struct AskPocketManualsIntent: AppIntent {
-    static let title: LocalizedStringResource = "Ask Pocket Manuals"
-    static let description = IntentDescription(
-        "Answers a question from your indexed PDF manuals, with the page each statement comes from."
-    )
-
-    @Parameter(title: "Question", requestValueDialog: "What do you want to ask your manuals?")
-    var question: String
-
-    @Dependency private var ask: AskViewModel
-    @Dependency private var library: ManualLibrary
-    @Dependency private var settings: ProviderSettings
-    @Dependency private var preferences: ManualsPreferences
-
-    static var parameterSummary: some ParameterSummary {
-        Summary("Ask Pocket Manuals \(\.$question)")
-    }
-
-    @MainActor
-    func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView {
-        IntentAnswer.reply(await Self.answer(question, ask: ask, library: library, settings: settings, preferences: preferences))
-    }
-
-    /// The Ask tab's answer to `question` over every searchable manual, through the tab's own
-    /// view model, so it also shows in Ask.
-    @MainActor
-    static func answer(
-        _ question: String,
-        ask: AskViewModel,
-        library: ManualLibrary,
-        settings: ProviderSettings,
-        preferences: ManualsPreferences
-    ) async -> IntentAnswer.Reply {
-        guard !ask.isRunning else {
-            return IntentAnswer.Reply("Pocket Manuals is busy with another question. Try again in a moment.")
-        }
-        // A fresh launch has not checked the embedder yet, and no manual is searchable until it has.
-        if library.embedderStatus == nil {
-            await library.refreshEmbedderStatus()
-        }
-        ask.question = question
-        ask.scopeID = nil
-        guard let run = ask.ask(settings: settings, preferences: preferences, library: library) else {
-            return IntentAnswer.Reply(ask.errorMessage ?? "Pocket Manuals could not take the question.")
-        }
-        AppLog.info("Siri question sent", properties: ["Showcase": "Pocket Manuals"])
-
-        switch await IntentAnswer.wait(for: run) {
-        case .stillRunning:
-            return IntentAnswer.Reply(IntentAnswer.stillRunning(tab: "Ask in Pocket Manuals"))
-        case .finished:
-            return finishedAnswer(ask: ask, library: library)
-        }
-    }
-
-    /// The claims as sentences, each followed by the pages it cites, e.g.
-    /// "Cook chicken to 165 °F (Kitchen Companion, p. 12)." A claim the Verifier found
-    /// unsupported says so.
-    @MainActor
-    private static func finishedAnswer(ask: AskViewModel, library: ManualLibrary) -> IntentAnswer.Reply {
-        if let error = ask.errorMessage {
-            return IntentAnswer.Reply("Pocket Manuals could not answer: \(error)")
-        }
-        guard let answer = ask.answer else {
-            return IntentAnswer.Reply(ask.undecodedAnswer ?? "Pocket Manuals did not answer.")
-        }
-        if answer.notFound || answer.claims.isEmpty {
-            return IntentAnswer.Reply("Your manuals do not cover that.")
-        }
-        var pages: [String] = []
-        let sentences = answer.claims.enumerated().map { number, claim in
-            let labels = claim.citations.compactMap { ask.pageReference(for: $0, library: library)?.chipLabel }
-            pages.append(contentsOf: labels.filter { !pages.contains($0) })
-            var sentence = claim.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if sentence.hasSuffix(".") { sentence.removeLast() }
-            // The on-device model sometimes starts a claim mid-sentence, in lowercase.
-            sentence = sentence.prefix(1).uppercased() + sentence.dropFirst()
-            if !labels.isEmpty { sentence += " (\(labels.joined(separator: "; ")))" }
-            if ask.verdicts[number + 1]?.kind == .unsupported {
-                sentence += ". The cited page does not support this"
-            }
-            return sentence + "."
-        }
-        return IntentAnswer.Reply(sentences.joined(separator: " "), sources: pages)
-    }
-}
-
 // MARK: - Siri phrases
 
 /// Siri phrases and Spotlight actions, available as soon as the app is installed. A phrase can
 /// only hold entity or enum parameters, so Siri asks for the question after the phrase.
-struct RailtracksShortcuts: AppShortcutsProvider {
+struct TravelAssistantShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: AskTravelAssistantIntent(),
@@ -170,15 +81,6 @@ struct RailtracksShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Ask About My Trip",
             systemImageName: "airplane.departure"
-        )
-        AppShortcut(
-            intent: AskPocketManualsIntent(),
-            phrases: [
-                "Ask \(.applicationName) about my manuals",
-                "Search my manuals in \(.applicationName)",
-            ],
-            shortTitle: "Ask My Manuals",
-            systemImageName: "book.pages"
         )
     }
 }

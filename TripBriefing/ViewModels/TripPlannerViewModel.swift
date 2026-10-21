@@ -155,7 +155,7 @@ final class TripPlannerViewModel {
         let fallbackProvider = settings.contextFallbackProvider
         let overflowHint = Self.overflowHint(settings: settings)
         let runProperties = [
-            "Showcase": "Travel Assistant",
+            "App": "Travel Assistant",
             "Provider": cloud.callTreeLabel,
             "Destination": request.destination,
             "Days": "\(request.dayCount)",
@@ -431,7 +431,7 @@ final class TripPlannerViewModel {
         agentModels[TripAgents.Name.assistant] = settings.agentLLMProvider.callTreeLabel
         // Counts and sources only: the question and answer text stay out of the logs.
         let chatProperties = [
-            "Showcase": "Travel Assistant",
+            "App": "Travel Assistant",
             "Provider": settings.agentLLMProvider.callTreeLabel,
             "HasNotes": "\(notes != nil)",
             "HasGuide": "\(guide != nil)",

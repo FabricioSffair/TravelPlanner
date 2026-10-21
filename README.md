@@ -1,44 +1,15 @@
-# Railtracks Showcase
+# Travel Assistant
 
-Two iOS showcases for [RailtracksSwift](../Railtracks-swift) in one app:
-
-- **Travel Assistant**: a trip briefing from parallel agents, a chat grounded in your briefing and Wikivoyage, and a sign translator.
-- **Pocket Manuals**: ask your PDF manuals; answers cite the page and get verified.
+An iOS and macOS showcase for [RailtracksSwift](https://github.com/RailtownAI/Railtracks-swift): a trip briefing from parallel agents, a chat grounded in your briefing and Wikivoyage, and a sign translator.
 
 Every run is traced to JSON, to the in-app call tree, and to Instruments through
 RailtracksInstrumentationKit.
 
-## How the app is put together
+The code still uses the app's first name, Trip Briefing: the target, the bundle id `io.railtown.TripBriefing` and the `TripBriefing/` folders. Pocket Manuals, which shared this app for a while, is now its own repository.
 
-- **Picker.** On first launch the root shows "Railtracks Showcase" with two large
-  cards, one per demo. The choice is saved in `UserDefaults` under
-  `showcase.selected` (absent until the first pick).
-- **Switching.** Settings opens with a **Showcase** picker that swaps the root
-  immediately and lands on the other demo's Settings tab. Each demo keeps its own
-  tabs: Plan, Chat, Translate, Settings for Travel Assistant; Library, Ask, Settings for
-  Pocket Manuals.
-- **One Settings view, shared keys.** Both demos use the same `SettingsView`:
-  Showcase, then the cloud provider and the API keys (`ProviderSettings`, Keychain
-  service `io.railtown.TripBriefing.apikeys`), then the current demo's own options.
-  Keys and provider are entered once. Pocket Manuals' index gets the shared OpenAI
-  key for its embedding fallback, and is told when it changes.
-- **State survives switching.** `TripBriefingApp` creates every long-lived object
-  once (`ProviderSettings`, the Travel Assistant view models, Pocket Manuals'
-  `ManualLibrary` with its `ManualIndex`, `AskViewModel` and `ManualsPreferences`)
-  and injects them, so a run, an answer or indexing in progress keeps going while
-  the other demo is showing.
-- **Code layout.** Travel Assistant was called Trip Briefing, and its code still uses that
-  name (`TripBriefing/Views`,
-  `ViewModels`, `Agents`, `Flow`, `Knowledge`, …). The showcase shell is in
-  `TripBriefing/Showcase/`. Pocket Manuals is in `TripBriefing/PocketManuals/`
-  (`Knowledge/`, `Library/`, `Ask/`, `Views/`, `Samples/`). It came from the
-  standalone `PocketManuals` repo (`../PocketManuals`), with its own key storage,
-  provider enum and settings replaced by the shared ones; its preferences live in
-  `ManualsPreferences` under `manuals.`-prefixed `UserDefaults` keys.
+## How it works
 
-## Travel Assistant
-
-Its Plan tab builds the trip briefing: one orchestrator node fans out three agents in parallel, then a concierge agent
+The Plan tab builds the trip briefing: one orchestrator node fans out three agents in parallel, then a concierge agent
 composes the briefing using a packing-list agent exposed as a tool.
 
 ```
@@ -112,88 +83,14 @@ article, and carries the attribution.
 are shown with "Text adapted from Wikivoyage, CC BY-SA 4.0" and a link to the source
 article; keep that footer if you change the UI.
 
-## Pocket Manuals
+## Demo script
 
-A RAG showcase: you import PDF manuals, the app indexes each one page by page, and
-questions are answered from your own manuals with page-level citations. Tabs:
-**Library** (PDF import, bundled samples, indexing), **Ask** (grounded answers with
-page citations, checked by a verifier) and **Settings** (the shared one).
-
-### The library
-
-- **Import PDF** copies the file to `Documents/Manuals/<id>.pdf` (`<id>` is a UUID),
-  reads the title and page count with PDFKit, and indexes it immediately.
-- Swiping to delete removes the document, its file, and its pages from the index.
-- The list is saved as JSON at `Application Support/PocketManuals/library.json`.
-- **Samples** are bundled from `TripBriefing/PocketManuals/Samples/`. The synchronized
-  folder copies them flat into the bundle, and the app looks in both places. They show
-  up as *Not indexed* and are indexed only when you tap **Index**, never at launch,
-  because on a device without the on-device model that would spend your OpenAI key.
-
-### Ask
-
-One `RTSOrchestratorNode` (`AskWorkflow`, traced as "Ask Manuals") runs two agents on
-the provider chosen in Settings:
-
-1. **Answerer.** Calls `SearchManuals`, an `RTSKnowledgeSearchTool` over
-   `ManualIndex.search`, and replies with `{ claims: [{ text, citations }], notFound }`,
-   each citation a `"<docID>#page-N"` key.
-2. **Verifier.** No tools. Gets the numbered claims and the collected passages and
-   returns a verdict per claim: supported, partial or unsupported (✓, ~, ⚠).
-
-**Ground answers in my manuals** (on by default, in Ask and in Settings) switches the
-search tool and the Verifier off for a with/without comparison. The scope picker
-searches all manuals or one. Tapping a citation chip or a source opens the manual at
-that page.
-
-### The index and its embedder
-
-`ManualIndex` (an actor) keeps one `RTSRAGFileStore` per embedder at
-`Application Support/ManualIndex/<embedder-id>/`. It embeds on-device with Apple's
-`NLContextualEmbedding` when its assets are already present (loaded within 8 s);
-otherwise with OpenAI `text-embedding-3-small` if the shared OpenAI key is set;
-otherwise it is unavailable and Settings shows why. The iOS 18 simulator has no
-on-device embedding model, so there indexing needs an OpenAI key. **Re-index
-library** (Settings) indexes every document again with the active embedder, skipping
-pages already stored for it.
-
-### Sample manuals
-
-Four sample PDFs ship in `TripBriefing/PocketManuals/Samples/`. Each sample's title in
-the library is its file name. All four are US federal government works, public domain
-(17 U.S.C. §105); may contain third-party images.
-
-| Sample | Publisher | Source |
-|---|---|---|
-| Kitchen Companion (USDA) | U.S. Department of Agriculture (govinfo copy) | https://www.govinfo.gov/content/pkg/GOVPUB-A110-PURL-LPS99050/pdf/GOVPUB-A110-PURL-LPS99050.pdf |
-| Energy Saver Guide (DOE) | U.S. Department of Energy (Energy Saver Guide 2022) | https://www.energy.gov/sites/default/files/2022-08/energy-saver-guide-2022.pdf |
-| Citizens Guide to Radon (EPA) | U.S. Environmental Protection Agency (A Citizen's Guide to Radon) | https://www.epa.gov/sites/default/files/2016-12/documents/2016_a_citizens_guide_to_radon.pdf |
-| Prepare Your Pets for Disasters (Ready.gov) | Ready.gov | https://www.ready.gov/sites/default/files/2023-06/ready.gov_prepare-pets-for-disasters.pdf |
-
-## Demo scripts
-
-### Travel Assistant
-
-1. Pick **Travel Assistant**, and set a key in Settings.
+1. Set a key in Settings, or keep the agents on Apple Intelligence.
 2. Plan tab: keep the default destination, Lisbon, Portugal, and tap **Build my briefing**.
 3. Watch the **Travel Guide** row in the Agents list go from indexing to ready (or
    unavailable, with the reason) while the three agents run in parallel.
 4. Under the practical tips, open the **Sources** footer: the Wikivoyage sections the
    Concierge's searches returned, the article link, and the CC BY-SA attribution.
-
-### Pocket Manuals
-
-1. Pick **Pocket Manuals** (or switch in Settings ▸ Showcase).
-2. Library tab: tap **Index** on each of the four samples. On a simulator this needs
-   the OpenAI key.
-3. Ask tab: tap each suggestion and check the cited page:
-
-| Question | Expected citation |
-|---|---|
-| What temperature should I set my water heater to? | Energy Saver Guide p. 22, 120 °F |
-| At what radon level should I fix my home? | Citizen's Guide to Radon p. 6, 4 pCi/L |
-| What should go in my pet's emergency kit? | Prepare Your Pets p. 2 |
-| What internal temperature should chicken reach? | Kitchen Companion p. 28, 165 °F. Retrieval ranks that page 5th for this wording; the Answerer is told to search again with other wording to reach it |
 
 ## Requirements
 
@@ -216,34 +113,32 @@ the library is its file name. All four are US federal government works, public d
 
   Without a key, its pipeline stays off. With one, the logger's diagnostics print to the
   console, which shows whether batches upload.
-- An API key for OpenAI, Anthropic or Gemini, entered once in the Settings tab and
-  shared by both demos. Keys are stored in the Keychain and handed to
+- An API key for OpenAI, Anthropic or Gemini, entered once in the Settings tab and stored in
+  the Keychain. They are handed to
   `RTSLLMGateway` per run.
 
 ## Run
 
-1. Open `TripBriefing.xcodeproj`, select an iPhone simulator or device, ⌘R. The
-   target and bundle id are still `TripBriefing` / `io.railtown.TripBriefing` (keys
-   saved by earlier builds stay in the Keychain); the home-screen name is
-   "Railtracks Showcase".
-2. Pick a demo on the first screen.
-3. Settings tab: pick a provider, paste its key.
-4. Follow the demo scripts below.
+1. Open `TripBriefing.xcodeproj`, select an iPhone simulator, a device or My Mac, and press ⌘R. The
+   target and bundle id are still `TripBriefing` / `io.railtown.TripBriefing`, so keys
+   saved by earlier builds stay in the Keychain. The home-screen name is "Travel Assistant".
+2. Settings: pick a provider, and paste its key.
+3. Follow the demo script above.
 
-## Profile in Instruments (Travel Assistant)
+## Profile in Instruments
 
 Install the Railtracks Instrumentation package (see the visualizer repo), then
 Product → Profile with the **Railtracks Instrumentation** template. Agent Runs
 shows three overlapping bars followed by two stacked ones; the Flow Tree nests
 Packing List under Concierge; Tool I/O lists the geocode, forecast and Maps calls.
 
-## Where the trace goes (Travel Assistant)
+## Where the trace goes
 
 `Documents/sessions/Trip Briefing_<sessionID>.json` inside the app sandbox (the flow
 keeps the workflow's name, Trip Briefing). The
 Plan tab shows a Share button for the file after each run.
 
-## Integration notes (Travel Assistant)
+## Integration notes
 
 Things worth reporting back while building this app:
 

@@ -50,7 +50,7 @@ final class PhotoTranslateViewModel {
         nodeTree.attach(to: flow)
         let prompt = "Translate everything in this photo into \(targetLanguage)."
         let images = [RTSImage(data: jpegData, mimeType: "image/jpeg")]
-        let properties = ["Showcase": "Travel Assistant", "Provider": settings.cloudLLMProvider.callTreeLabel]
+        let properties = ["App": "Travel Assistant", "Provider": settings.cloudLLMProvider.callTreeLabel]
         let started = Date()
         let traceUpload = RailtownSetup.uploadTrace(of: flow)
 

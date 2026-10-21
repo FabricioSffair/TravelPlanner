@@ -5,28 +5,14 @@
 
 import SwiftUI
 
-/// One Settings tab for both showcases: the showcase switch, the shared provider and keys, then
-/// the current showcase's own options.
+/// The provider and keys, then Travel Assistant's own options.
 struct SettingsView: View {
-    @Environment(ShowcaseSelection.self) private var showcase
     @Environment(ProviderSettings.self) private var settings
 
     var body: some View {
         @Bindable var settings = settings
         NavigationStack {
             Form {
-                Section {
-                    Picker("Showcase", selection: showcaseBinding) {
-                        ForEach(Showcase.allCases) { item in
-                            Label(item.title, systemImage: item.systemImage).tag(item)
-                        }
-                    }
-                } header: {
-                    Text("Showcase")
-                } footer: {
-                    Text("Switches the demo right away. The provider and API keys below are shared by both.")
-                }
-
                 Section {
                     Toggle("Run agents on Apple Intelligence", isOn: $settings.agentsOnDevice)
                     Toggle("Fall back to \(settings.cloudProvider.title) when the context is full", isOn: $settings.fallsBackWhenContextFull)
@@ -73,39 +59,24 @@ struct SettingsView: View {
                 Section {
                     Toggle("Allow OpenAI embeddings", isOn: $settings.allowsCloudEmbeddings)
                 } footer: {
-                    Text("Search indexes use Apple's on-device embedding model. On: when that model is missing, they embed with OpenAI instead, which sends the indexed text to OpenAI and needs an OpenAI key. Off: indexing never leaves the device, and search is unavailable without the on-device model.")
+                    Text("The travel guide and trip indexes use Apple's on-device embedding model. On: when that model is missing, they embed with OpenAI instead, which sends the indexed text to OpenAI and needs an OpenAI key. Off: indexing never leaves the device, and search is unavailable without the on-device model.")
                 }
 
-                switch currentShowcase {
-                case .tripBriefing:
-                    TripBriefingSettingsSections()
-                case .pocketManuals:
-                    ManualsSettingsSection()
-                }
+                TripBriefingSettingsSections()
             }
             .groupedFormOnMac()
             .navigationTitle("Settings")
         }
     }
 
-    private var currentShowcase: Showcase { showcase.selected ?? .tripBriefing }
-
     private var agentsFooter: String {
         let status = ProviderSettings.onDeviceStatusText
         guard settings.agentsOnDevice else {
             return "Off: the agents run on the cloud provider below. \(status)"
         }
-        let available = ProviderSettings.onDeviceAvailable
-        switch currentShowcase {
-        case .tripBriefing:
-            return "On: every agent runs on-device. The Sign Translator still uses the cloud provider, because the on-device model ignores images. \(status)"
-                + (available ? "" : " Runs cannot start until it is available.")
-                + " " + fallbackNote
-        case .pocketManuals:
-            return "On: the Answerer and the Verifier run on-device. \(status)"
-                + (available ? "" : " Questions cannot run until it is available.")
-                + " " + fallbackNote
-        }
+        return "On: every agent runs on-device. The Sign Translator still uses the cloud provider, because the on-device model ignores images. \(status)"
+            + (ProviderSettings.onDeviceAvailable ? "" : " Runs cannot start until it is available.")
+            + " " + fallbackNote
     }
 
     /// What the fallback switch does, and whether it can act right now.
@@ -127,28 +98,13 @@ struct SettingsView: View {
     }
 
     private var cloudFooter: String {
-        switch currentShowcase {
-        case .tripBriefing:
-            settings.agentsOnDevice
-                ? "Used by the Sign Translator."
-                : "Used by Weather Scout, Local Guide, Concierge, Packing List and the translator."
-        case .pocketManuals:
-            settings.agentsOnDevice
-                ? "Not used while the agents run on Apple Intelligence."
-                : "The provider that answers questions about your manuals."
-        }
-    }
-
-    /// Switches the root right away; the picker never offers "none".
-    private var showcaseBinding: Binding<Showcase> {
-        Binding(
-            get: { currentShowcase },
-            set: { showcase.selected = $0 }
-        )
+        settings.agentsOnDevice
+            ? "Used by the Sign Translator."
+            : "Used by Weather Scout, Local Guide, Concierge, Packing List and the translator."
     }
 }
 
-/// Travel Assistant's own options, unchanged from its standalone Settings.
+/// Travel Assistant's own options.
 private struct TripBriefingSettingsSections: View {
     @Environment(ProviderSettings.self) private var settings
     /// For Prepare travel guide: the destination and the guide library live with the planner.
