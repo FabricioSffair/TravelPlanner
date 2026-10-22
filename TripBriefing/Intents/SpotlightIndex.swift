@@ -65,6 +65,8 @@ enum SpotlightIndex {
     // MARK: Launch
 
     @MainActor private static var didSync = false
+    /// Set once the manual pages this app indexed while it also held Pocket Manuals are gone.
+    private static let manualPagesClearedKey = "spotlight.manualPagesCleared"
 
     /// Indexes the trip on disk when Spotlight does not have it yet: a trip planned before this
     /// feature, or before a format change. Once per launch, however many windows call it.
@@ -72,8 +74,24 @@ enum SpotlightIndex {
     static func syncAtLaunch() {
         guard !didSync else { return }
         didSync = true
-        if let archive = TripNotesArchive.load(),
-           UserDefaults.standard.string(forKey: tripStateKey) != signature(of: archive) {
+        let archive = TripNotesArchive.load()
+        guard UserDefaults.standard.bool(forKey: manualPagesClearedKey) else {
+            // Until Pocket Manuals became its own app, this app also put manual pages in
+            // Spotlight, and tapping one now opens nothing. Clear the app's items once, then
+            // index the trip again.
+            Task {
+                do {
+                    try await CSSearchableIndex.default().deleteAllSearchableItems()
+                    UserDefaults.standard.set(true, forKey: manualPagesClearedKey)
+                    AppLog.info("Old Spotlight items removed")
+                } catch {
+                    AppLog.warning("Old Spotlight items not removed", properties: ["Reason": error.localizedDescription])
+                }
+                if let archive { indexTrip(archive) }
+            }
+            return
+        }
+        if let archive, UserDefaults.standard.string(forKey: tripStateKey) != signature(of: archive) {
             indexTrip(archive)
         }
     }
