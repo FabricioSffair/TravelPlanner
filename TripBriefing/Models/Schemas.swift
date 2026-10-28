@@ -75,6 +75,9 @@ struct ItineraryActivity: Codable, Hashable {
     let title: String
     /// The real place name from PlacesSearch.
     let place: String
+    /// The town or city the traveler is in during this activity, e.g. "Whistler" for a day trip
+    /// there even when the tour operator is based in Vancouver. The name only, no region or country.
+    let area: String
     /// One sentence.
     let details: String
 }
@@ -126,9 +129,28 @@ extension WeatherReport {
 
 extension Itinerary {
     var compactText: String {
-        days.enumerated().map { index, day in
-            let slots = day.activities.map { "\($0.slot.lowercased()) \($0.title) at \($0.placeName)" }
+        let dayLines = days.enumerated().map { index, day in
+            let slots = day.activities.map { activity in
+                let area = activity.area.trimmingCharacters(in: .whitespaces)
+                let line = "\(activity.slot.lowercased()) \(activity.title) at \(activity.placeName)"
+                return area.isEmpty ? line : "\(line) in \(area)"
+            }
             return "Day \(index + 1) (\(day.date)): \(slots.joined(separator: "; "))."
-        }.joined(separator: "\n")
+        }
+        let areas = self.areas
+        let summary = areas.isEmpty ? [] : ["Cities and towns on the plan: \(areas.joined(separator: ", "))."]
+        return (summary + dayLines).joined(separator: "\n")
+    }
+
+    /// The distinct towns and cities of the activities, in trip order, first spelling kept.
+    /// Computed here so the trip notes name every town even when the model's prose does not.
+    var areas: [String] {
+        var seen: Set<String> = []
+        var areas: [String] = []
+        for activity in days.flatMap(\.activities) {
+            let area = activity.area.trimmingCharacters(in: .whitespaces)
+            if !area.isEmpty, seen.insert(area.lowercased()).inserted { areas.append(area) }
+        }
+        return areas
     }
 }

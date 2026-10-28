@@ -170,14 +170,18 @@ final class TripPlannerViewModel {
                 self?.isRunning = false
                 self?.elapsed = Date().timeIntervalSince(started)
             }
+            var finished = false
             do {
-                let agents = try TripAgents.make(cloud: cloud, phrasebook: phrasebookProvider)
+                let places = PlacesSearchSession()
+                let agents = try TripAgents.make(cloud: cloud, phrasebook: phrasebookProvider, places: places)
                 var workflow = TripBriefingWorkflow(agents: agents)
                 workflow.onAgentResult = { [weak self] agentName, text in
                     Task { @MainActor in self?.publishSection(for: agentName, text: text) }
                 }
                 if let fallbackProvider {
-                    workflow.fallbackAgents = try TripAgents.make(cloud: fallbackProvider, phrasebook: fallbackProvider)
+                    workflow.fallbackAgents = try TripAgents.make(
+                        cloud: fallbackProvider, phrasebook: fallbackProvider, places: places
+                    )
                     workflow.onFallback = { [weak self] agentName in
                         Task { @MainActor in self?.noteFallback(of: agentName, to: fallbackProvider) }
                     }
@@ -189,6 +193,7 @@ final class TripPlannerViewModel {
                 }
                 let output = try await flow.run(workflow, input: input, gateway: gateway)
                 self?.consume(output)
+                finished = true
                 AppLog.info("Briefing finished", properties: runProperties.merging([
                     "Seconds": String(format: "%.1f", Date().timeIntervalSince(started)),
                 ]) { current, _ in current })
@@ -211,7 +216,7 @@ final class TripPlannerViewModel {
             self?.collectGuideSources()
             // Also after a failure: the sections that did finish (say, weather and itinerary
             // before a Concierge error) are still worth asking about.
-            self?.indexTripNotes(openAIKey: embeddingKey)
+            self?.indexTripNotes(openAIKey: embeddingKey, archive: finished)
         }
     }
 
@@ -323,7 +328,10 @@ final class TripPlannerViewModel {
 
     /// Embeds the finished briefing so the Trip Assistant can search it. Uses the guide's
     /// embedder choice; when no embedder is available, asking stays off and the status says why.
-    private func indexTripNotes(openAIKey: String?) {
+    /// - Parameter archive: whether to save the notes for Siri and replace the Spotlight items.
+    ///   False for a failed or cancelled briefing, so its partial notes do not overwrite the last
+    ///   good trip.
+    private func indexTripNotes(openAIKey: String?, archive shouldArchive: Bool) {
         let notes = TripNotes.notes(
             request: request,
             report: report,
@@ -344,9 +352,11 @@ final class TripPlannerViewModel {
                 guard let self, token == self.guideRunToken else { return }
                 self.tripNotes = indexed
                 self.notesTripDays = days
-                let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes)
-                archive.save()
-                SpotlightIndex.indexTrip(archive)
+                if shouldArchive {
+                    let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes)
+                    archive.save()
+                    SpotlightIndex.indexTrip(archive)
+                }
                 self.tripNotesStatus = "Ready · \(indexed.noteCount) notes · \(indexed.embedderLabel)"
                 AppLog.info("Trip notes indexed", properties: ["Notes": "\(indexed.noteCount)", "Embedder": indexed.embedderLabel])
             } catch {

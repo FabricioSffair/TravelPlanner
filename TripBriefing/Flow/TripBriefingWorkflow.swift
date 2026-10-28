@@ -61,7 +61,7 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         async let weather = reporting(TripAgents.Name.weather) { try await context.call(
             agents.weather,
             fallback: fallbackAgents?.weather,
-            prompt: "Destination: \(destination). Dates: \(start) to \(end). Report the daily weather.",
+            prompt: "Destination: \(destination). Dates: \(start) to \(end). Give the daily forecast for these dates.",
             onFallback: onFallback
         ) }
         // Every date spelled out: given only a range, the on-device model returned one day of four.
@@ -104,7 +104,12 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         let briefing = try await reporting(TripAgents.Name.concierge) { try await context.call(
             agents.concierge(guideTool: travelGuideTool),
             fallback: fallbackAgents?.concierge(guideTool: travelGuideTool),
+            // The plain sentence first keeps Apple's language check on English. Without it, the
+            // place names and numbers below read as Indonesian (82 % for a Lisbon trip), and the
+            // iPhone model refuses the prompt with unsupportedLanguageOrLocale.
             prompt: """
+            Write the trip briefing in English from the weather report and the itinerary below.
+
             Dates: \(start) to \(end) (\(dayCount) day(s)) in \(destination).
 
             WEATHER REPORT:
@@ -124,10 +129,11 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         ]
     }
 
-    /// Asks the Local Guide again for any date its answer left out, one date per call, naming the
-    /// places already planned so it picks others. Measured on-device: one run in three returned a
-    /// single day of four. Costs nothing when the first answer is complete; text that does not
-    /// decode passes through unchanged.
+    /// Asks the Local Guide again for any date its answer left out, then for any day that repeats
+    /// an earlier day's place or leaves a place empty, one date per call, naming the places already
+    /// planned so it picks others. Measured on-device: one run in three returned a single day of
+    /// four, and HMS Belfast came back on most days of a long trip. Costs nothing when the first
+    /// answer is complete and varied; text that does not decode passes through unchanged.
     func completeItinerary(
         _ json: String,
         dates: [String],
@@ -137,13 +143,15 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
     ) async throws -> String {
         guard var plan = try? Itinerary.decode(from: json) else { return json }
         let missing = dates.filter { date in !plan.days.contains { $0.date == date } }
-        guard !missing.isEmpty else { return json }
-        AppLog.warning("Itinerary incomplete, asking again for missing days", properties: [
-            "Returned": "\(plan.days.count)", "Missing": "\(missing.count)",
+        let repeated = Self.daysToReplan(in: plan, dates: dates).prefix(Self.maxReplannedDays)
+        guard !missing.isEmpty || !repeated.isEmpty else { return json }
+        AppLog.warning("Itinerary incomplete or repetitive, asking again", properties: [
+            "Returned": "\(plan.days.count)", "Missing": "\(missing.count)", "Repeated": "\(repeated.count)",
         ])
 
-        for date in missing {
-            let used = Set(plan.days.flatMap { $0.activities.map(\.placeName) })
+        for date in missing + repeated {
+            let others = plan.days.filter { $0.date != date }
+            let used = Set(others.flatMap { $0.activities.map(\.placeName) }.filter { !$0.isEmpty })
             let answer = try await context.call(
                 agents.itinerary,
                 fallback: fallbackAgents?.itinerary,
@@ -157,7 +165,7 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
             onAgentResult(TripAgents.Name.itinerary, answer)
             // Keyed to the date asked for, whatever date the model wrote.
             if let day = (try? Itinerary.decode(from: answer))?.days.first {
-                plan = Itinerary(days: plan.days + [ItineraryDay(date: date, activities: day.activities)])
+                plan = Itinerary(days: others + [ItineraryDay(date: date, activities: day.activities)])
             }
         }
         let ordered = Itinerary(days: plan.days
@@ -167,6 +175,25 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
             return json
         }
         return merged
+    }
+
+    /// Days asked for again because of their places, at most. Each one is another on-device call.
+    static let maxReplannedDays = 4
+
+    /// Dates, in trip order, of the days with an empty place or a place an earlier day already
+    /// has. The first day to use a place keeps it.
+    static func daysToReplan(in plan: Itinerary, dates: [String]) -> [String] {
+        var seen = Set<String>()
+        var replan: [String] = []
+        for date in dates {
+            guard let day = plan.days.first(where: { $0.date == date }) else { continue }
+            let places = day.activities.map { $0.placeName.lowercased() }
+            if places.contains(where: \.isEmpty) || places.contains(where: seen.contains) {
+                replan.append(date)
+            }
+            seen.formUnion(places.filter { !$0.isEmpty })
+        }
+        return replan
     }
 
     /// Runs one agent call and reports its answer through `onAgentResult`.

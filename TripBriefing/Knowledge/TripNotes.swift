@@ -44,33 +44,83 @@ struct TripNotes: Sendable {
     let notes: [TripNote]
     let runtime: RTSRAGRetrievalRuntime
 
-    /// Vector search, with any day the query names put first. The on-device embeddings barely
-    /// tell "day 2" from "day 4", so "What is the plan for day 2?" would otherwise return the
-    /// other days' plans; a plain text match on the day fixes that.
+    /// Vector search, with any day or part the query names put first. The on-device embeddings
+    /// barely tell "day 2" from "day 4", so "What is the plan for day 2?" would otherwise return
+    /// the other days' plans; a plain text match on the day fixes that. They do not route
+    /// "weather" to the Weather note either (it ranked a Phrasebook chunk first), so a few
+    /// keywords name a part directly.
+    ///
+    /// A query that names no day also gets the Itinerary note, in the last slot. Such a question
+    /// is often about the whole trip ("Which cities do we visit?"), and its answer is spread over
+    /// every day plan, past what the few best matches cover: "cities to visit" ranked the
+    /// practical tips, which name the airports, above the day that goes to Whistler.
+    ///
+    /// Returns at most `topK` hits, most important first: `RTSKnowledgeSearchTool` keeps only the
+    /// first `topK` of what a source returns, so anything past that never reaches the model.
     func search(_ query: String, topK: Int) async throws -> [TripNoteHit] {
         let wanted = Self.namedDays(in: query, dayCount: planDayCount)
-        let named = notes
-            .filter { note in
-                // The weather note covers every day, so a named day brings it along: "Will it
-                // rain on the 16th?" needs it more than that day's plan.
-                if !wanted.isEmpty, note.part == "Weather" { return true }
-                return wanted.contains { token in
-                    // "-16" is a date's day of month: match the end, not the month in every date.
-                    token.hasPrefix("-") ? note.part.hasSuffix(token) : note.part.contains(token)
-                }
+        let topics = Self.namedParts(in: query)
+        let plans = notes.filter { note in
+            wanted.contains { token in
+                // "-16" is a date's day of month: match the end, not the month in every date.
+                token.hasPrefix("-") ? note.part.hasSuffix(token) : note.part.contains(token)
             }
+        }
+        // The weather note covers every day, so a named day brings it along, after the plans:
+        // with two named days and two slots, "day 2 and day 3" needs both plans more. A weather
+        // question ("Will it rain on day 2?") names Weather as a topic, which puts it first.
+        let alongside = wanted.isEmpty || topics.contains("Weather") ? [] : ["Weather"]
+        let order = topics + plans.map(\.part) + alongside
+        let named = order
+            .compactMap { part in notes.first { $0.part == part } }
             .map { TripNoteHit(content: "\(destination) trip › \($0.part): \($0.text)", part: $0.part, score: 1) }
         let result = try await runtime.retrieve(query, topK: topK)
-        let vector = result.entries.map { hit in
-            var part = "Briefing"
-            if case .string(let name)? = hit.entry.metadata[TripNotes.partKey] {
-                part = name
+        let namedSet = Set(order)
+        let vector = result.entries
+            .map { hit in
+                var part = "Briefing"
+                if case .string(let name)? = hit.entry.metadata[TripNotes.partKey] {
+                    part = name
+                }
+                return TripNoteHit(content: hit.entry.content, part: part, score: Double(hit.score))
             }
-            return TripNoteHit(content: hit.entry.content, part: part, score: Double(hit.score))
+            .filter { !namedSet.contains($0.part) }
+        var hits = Array(named.prefix(topK))
+        let room = topK - hits.count
+        // The Itinerary takes the last free slot, after the named parts and the best vector
+        // matches: "What should I pack?" still gets the packing list first.
+        if wanted.isEmpty, room > 0, !namedSet.contains(Self.itineraryPart),
+           !vector.prefix(room).contains(where: { $0.part == Self.itineraryPart }),
+           let itinerary = notes.first(where: { $0.part == Self.itineraryPart }) {
+            hits += vector.prefix(room - 1)
+            hits.append(TripNoteHit(
+                content: "\(destination) trip › \(itinerary.part): \(itinerary.text)",
+                part: itinerary.part,
+                score: 1
+            ))
+        } else {
+            hits += vector.prefix(max(room, 0))
         }
-        let namedParts = Set(named.map(\.part))
-        return Array((named + vector.filter { !namedParts.contains($0.part) }).prefix(max(topK, named.count)))
+        return hits
     }
+
+    /// The parts a query names by topic, in note order. Whole words, so "say" does not match
+    /// "essay" and "rain" does not match "train".
+    static func namedParts(in query: String) -> [String] {
+        let words = Set(query.lowercased().split { !$0.isLetter }.map(String.init))
+        return partKeywords.filter { !words.isDisjoint(with: $0.words) }.map(\.part)
+    }
+
+    /// Part names as `notes(request:...)` writes them.
+    private static let partKeywords: [(part: String, words: Set<String>)] = [
+        ("Weather", ["weather", "forecast", "rain", "rainy", "raining", "temperature", "temperatures", "cold", "warm"]),
+        ("Packing list", ["pack", "packing", "bring", "wear", "clothes"]),
+        ("Practical tips", ["tip", "tips", "transport", "airport", "money"]),
+        ("Phrasebook", ["phrase", "phrases", "say", "speak", "language"]),
+    ]
+
+    /// The note that lists every day's plan in one passage.
+    static let itineraryPart = "Itinerary"
 
     /// How many day-plan notes there are, which is what "the last day" refers to.
     private var planDayCount: Int { notes.filter { $0.part.hasPrefix("Plan · Day ") }.count }
@@ -93,8 +143,9 @@ struct TripNotes: Sendable {
             days.append("Day \(number) ")
             return days
         }
-        if let match = text.firstMatch(of: #/day\s*(\d{1,2})\b/#), let number = Int(match.1) {
-            days.append("Day \(number) ")
+        // Every match, not the first: "day 2 and day 3" names both.
+        for match in text.matches(of: #/day\s*(\d{1,2})\b/#) {
+            if let number = Int(match.1) { days.append("Day \(number) ") }
         }
         if text.contains("last day"), dayCount > 0 {
             days.append("Day \(dayCount) ")
@@ -126,7 +177,7 @@ extension TripNotes {
             Traveler notes: \(request.notes.isEmpty ? "none" : request.notes)
             """),
             TripNote(part: "Weather", text: weather),
-            TripNote(part: "Itinerary", text: itinerary),
+            TripNote(part: TripNotes.itineraryPart, text: itinerary),
         ]
         if let report {
             notes.append(TripNote(part: "Overview", text: "\(report.headline). \(report.weatherSummary)"))
@@ -289,7 +340,8 @@ enum TripNotesTool {
                     )
                 }
             },
-            resultCountRange: 1...4
+            // At least 2, so the best match and the Itinerary `search` adds both fit.
+            resultCountRange: 2...4
         )
     }
 }

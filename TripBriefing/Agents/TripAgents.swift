@@ -41,7 +41,13 @@ enum TripAgents {
     /// - Parameters:
     ///   - cloud: provider for the agents that need tools and long context.
     ///   - phrasebook: provider for the phrasebook agent; on-device when available.
-    static func make(cloud: RTSLLMProvider, phrasebook phrasebookProvider: RTSLLMProvider) throws -> Set {
+    ///   - places: one briefing's PlacesSearch memory. Pass the same one to the fallback set, so a
+    ///     day that falls back to the cloud still skips the places already suggested.
+    static func make(
+        cloud: RTSLLMProvider,
+        phrasebook phrasebookProvider: RTSLLMProvider,
+        places: PlacesSearchSession
+    ) throws -> Set {
 
         // Track 1: two chained tools; the model decides the order.
         let weather = RTSAgent(
@@ -55,7 +61,9 @@ enum TripAgents {
             Return one entry in `days` per date from the tool: `date` as yyyy-MM-dd, `condition` in \
             a few words, `maxC` and `minC` in °C, and `rainChancePercent` only when the tool gives \
             one. Write a two-sentence `outlook` for the whole period. Set `isHistorical` to true \
-            when the tool's source says historical (last year's readings, not a forecast).
+            when the tool's source says historical (last year's readings, not a forecast). \
+            Reply with only the structured object: no introduction, no closing sentence, no code \
+            fences.
             """,
             outputSchema: WeatherReport.rtsSchema
         )
@@ -64,13 +72,17 @@ enum TripAgents {
         let itinerary = RTSAgent(
             llmProvider: cloud,
             name: Name.itinerary,
-            tools: [PlacesSearchTool()],
+            tools: [PlacesSearchTool(session: places)],
             systemMessage: """
             You are a local guide. Use PlacesSearch to find real places for each kind of activity you \
-            recommend (at most four searches). Return one entry in `days` for every date in the range, \
+            recommend (at most four searches). PlacesSearch never returns a place twice, so use each \
+            place once. Return one entry in `days` for every date in the range, \
             with `date` as yyyy-MM-dd and exactly three `activities` in order, with `slot` "Morning", \
             "Afternoon" and "Evening". For each activity, `title` is a few words, `place` is the place's \
             name exactly as PlacesSearch gives it, without the address, and `details` is one sentence. \
+            `area` is the town or city the traveler is in during the activity, not where the operator is \
+            based: PlacesSearch gives each place's `locality`, so use it when the activity happens at that \
+            place, and for a day trip to another town use that town. \
             Prefer different places on different days. Respect the traveler's notes.
             """,
             outputSchema: Itinerary.rtsSchema,
@@ -186,9 +198,10 @@ enum TripAgents {
             tools: [notesTool, guideTool].compactMap { $0 },
             systemMessage: """
             You answer a traveler's questions about their trip. \(steps.joined(separator: " "))\(days) \
-            The prompt may start with the recent conversation; use it to understand follow-up \
-            questions such as "and in the evening?". Answer in two to four plain sentences, only from \
-            the search results, and name the day, part of the briefing or guide section you used. \
+            The prompt may start with the recent conversation; use it only to understand follow-up \
+            questions such as "and in the evening?". Search again for every new question, even one \
+            asked before, and never repeat an earlier answer from the conversation. Answer in two to \
+            four plain sentences, only from the search results, and name the day, part of the briefing or guide section you used. \
             Keep numbers, dates and place names exactly as the results give them. If the results do \
             not answer the question, say so. Do not guess.
             """

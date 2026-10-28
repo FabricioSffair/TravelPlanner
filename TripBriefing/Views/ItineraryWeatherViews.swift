@@ -60,6 +60,11 @@ private struct ActivityRow: View {
             VStack(alignment: .leading, spacing: .spacingXS) {
                 Label(activity.place, systemImage: "mappin.and.ellipse")
                     .font(.subheadline.weight(.medium))
+                if !activity.area.isEmpty {
+                    Text(activity.area)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(activity.details)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
