@@ -40,6 +40,7 @@ struct TripChatView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.spacing4XL)
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: model.chatMessages) {
                         guard let last = model.chatMessages.last else { return }
                         withAnimation(.easeOut(duration: 0.2)) {
@@ -66,6 +67,7 @@ struct TripChatView: View {
                 .font(.headline)
             ForEach(Self.suggestions, id: \.self) { suggestion in
                 Button {
+                    inputFocused = false
                     model.sendChat(suggestion, settings: settings)
                 } label: {
                     Label(suggestion, systemImage: "text.bubble")
@@ -118,7 +120,7 @@ struct TripChatView: View {
 
     private func send() {
         model.sendChat(settings: settings)
-        inputFocused = true
+        inputFocused = false
     }
 }
 

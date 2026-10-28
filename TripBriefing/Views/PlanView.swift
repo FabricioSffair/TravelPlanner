@@ -12,6 +12,14 @@ import RailtracksSwiftUI
 struct PlanView: View {
     @Environment(ProviderSettings.self) private var settings
     @Bindable var model: TripPlannerViewModel
+    /// The trip field being edited, so the keyboard can be put away.
+    @FocusState private var editingField: TripField?
+    /// City suggestions while the destination is being typed.
+    @State private var destinations = DestinationCompleter()
+
+    private enum TripField: Hashable {
+        case destination, language, notes
+    }
 
     var body: some View {
         NavigationStack {
@@ -45,7 +53,33 @@ struct PlanView: View {
                 traceSection
             }
             .groupedFormOnMac()
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Travel Assistant")
+            #if os(iOS)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    // iOS has no suggestion menu for a text field, so the cities go in the bar
+                    // above the keyboard, like QuickType suggestions.
+                    if editingField == .destination, !destinations.suggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack {
+                                ForEach(destinations.suggestions, id: \.self) { suggestion in
+                                    Button(suggestion) {
+                                        destinations.pick(suggestion)
+                                        model.request.destination = suggestion
+                                        editingField = nil
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    } else {
+                        Spacer()
+                    }
+                    Button("Done") { editingField = nil }
+                }
+            }
+            #endif
             .task {
                 if settings.groundsTipsInWikivoyage { model.warmUpGuide() }
             }
@@ -58,17 +92,30 @@ struct PlanView: View {
         Section("Trip") {
             TextField("Destination", text: $model.request.destination)
                 .capitalizesWords()
+                .focused($editingField, equals: .destination)
+                .onChange(of: model.request.destination) { _, text in destinations.update(text) }
+                #if os(macOS)
+                // A menu under the field, like Safari's address bar. Picking one writes it into
+                // the field, and `update` recognizes it.
+                .textInputSuggestions(destinations.suggestions, id: \.self) { suggestion in
+                    Label(suggestion, systemImage: "mappin.and.ellipse")
+                        .textInputCompletion(suggestion)
+                }
+                #endif
             DatePicker("From", selection: $model.request.startDate, displayedComponents: .date)
             DatePicker("To", selection: $model.request.endDate, in: model.request.startDate..., displayedComponents: .date)
             TextField("I speak…", text: $model.request.homeLanguage)
+                .focused($editingField, equals: .language)
             TextField("Notes for the guide", text: $model.request.notes, axis: .vertical)
                 .lineLimit(2...4)
+                .focused($editingField, equals: .notes)
         }
     }
 
     private var runSection: some View {
         Section {
             Button {
+                editingField = nil
                 model.run(settings: settings)
             } label: {
                 HStack {
