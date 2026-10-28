@@ -57,7 +57,26 @@ enum ContextFallback {
         return text.contains("ToolCallError") && text.contains("GeneratedContent")
     }
 
-    /// Runs `primary`, once more if the model made a tool call FoundationModels could not decode.
+    /// Whether `error` is FoundationModels failing to read the model's final answer as the output
+    /// schema, for example prose around a fenced JSON block ("Failed to convert text into
+    /// GeneratedContent"). Not a tool call, so `isBadToolCall` misses it: there is no
+    /// "ToolCallError" in the text. The SDK passes the error up unchanged, so the typed case
+    /// matches; the text check is for a wrapped error, as in `isContextOverflow`, or a later error
+    /// type (iOS 27's `LanguageModelError` has no decoding case).
+    static func isDecodingFailure(_ error: Error) -> Bool {
+        #if canImport(FoundationModels)
+        if #available(iOS 26, macOS 26, *),
+           let generationError = error as? LanguageModelSession.GenerationError,
+           case .decodingFailure = generationError {
+            return true
+        }
+        #endif
+        let text = "\(error)"
+        return text.contains("decodingFailure") || text.contains("Failed to convert text into")
+    }
+
+    /// Runs `primary`, once more if the model made a tool call or gave a final answer
+    /// FoundationModels could not decode. A second failure is thrown as is, never sent to `fallback`.
     /// When it fails because the on-device context is full: with a `fallback`, reports
     /// `onFallback` and runs `fallback` with the same prompt; without one, runs `primary` once
     /// more, because an overflow can also be the model's answer running on (a short prompt that
@@ -73,6 +92,9 @@ enum ContextFallback {
             } catch where isBadToolCall(error) {
                 AppLog.warning("Malformed tool call, agent run again", properties: ["Error": shortError(error)])
                 return try await primary()
+            } catch where isDecodingFailure(error) {
+                AppLog.warning("Answer did not match the output schema, agent run again", properties: ["Error": shortError(error)])
+                return try await primary()
             }
         } catch where isContextOverflow(error) {
             guard let fallback else {
@@ -86,7 +108,8 @@ enum ContextFallback {
 }
 
 extension RTSRunContext {
-    /// `call(_:prompt:)`, run again once after a malformed tool call, and retried on `fallback`
+    /// `call(_:prompt:)`, run again once after a malformed tool call or an answer that does not
+    /// match the output schema, and retried on `fallback`
     /// when the on-device context overflows.
     /// - Parameter onFallback: receives the agent's name when the retry starts.
     func call(
