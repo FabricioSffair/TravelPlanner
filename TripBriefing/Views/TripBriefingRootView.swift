@@ -45,6 +45,13 @@ struct TripBriefingRootView: View {
         }
         .task { SpotlightIndex.syncAtLaunch() }
         .onContinueUserActivity(CSSearchableItemActionType, perform: openSpotlightResult)
+        #if os(macOS)
+        .onChange(of: SpotlightIndex.requests.identifier, initial: true) { _, identifier in
+            guard let identifier else { return }
+            SpotlightIndex.requests.identifier = nil
+            openSpotlightResult(identifier)
+        }
+        #endif
         .sheet(item: $spotlightNote) { item in
             TripNoteSheet(note: item.note, destination: item.destination)
         }
@@ -52,6 +59,10 @@ struct TripBriefingRootView: View {
 
     private func openSpotlightResult(_ activity: NSUserActivity) {
         guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return }
+        openSpotlightResult(identifier)
+    }
+
+    private func openSpotlightResult(_ identifier: String) {
         spotlightNote = SpotlightIndex.note(for: identifier)
     }
 }

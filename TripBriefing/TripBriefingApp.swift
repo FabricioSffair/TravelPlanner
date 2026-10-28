@@ -19,6 +19,9 @@ import RailtownLogger
 
 @main
 struct TripBriefingApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(SpotlightAppDelegate.self) private var appDelegate
+    #endif
     @State private var settings: ProviderSettings
     @State private var planner: TripPlannerViewModel
     @State private var translator: PhotoTranslateViewModel
