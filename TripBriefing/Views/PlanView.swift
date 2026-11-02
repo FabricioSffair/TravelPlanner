@@ -129,7 +129,7 @@ struct PlanView: View {
                 .frame(maxWidth: .infinity)
             }
             .primaryActionOnMac()
-            .disabled(model.isRunning || model.isPreparingGuide || settings.agentsUnavailableReason != nil)
+            .disabled(model.isRunning || model.isPreparingGuide || !model.request.hasDestination || settings.agentsUnavailableReason != nil)
 
             if let message = model.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")

@@ -38,12 +38,17 @@ struct TripRequest: Sendable {
         ]
     }
 
+    /// Whether a destination was typed. The form starts without one.
+    var hasDestination: Bool {
+        !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     static var sample: TripRequest {
         let calendar = Calendar(identifier: .gregorian)
         let start = calendar.date(byAdding: .day, value: 5, to: Date())!
         let end = calendar.date(byAdding: .day, value: 8, to: Date())!
         return TripRequest(
-            destination: "Lisbon, Portugal",
+            destination: "",
             startDate: start,
             endDate: end,
             notes: "We love seafood and walking. One museum day is enough.",

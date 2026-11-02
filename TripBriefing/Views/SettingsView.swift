@@ -134,7 +134,7 @@ private struct TripBriefingSettingsSections: View {
                     if planner.isPreparingGuide { ProgressView() }
                 }
             }
-            .disabled(planner.isPreparingGuide || planner.isRunning)
+            .disabled(planner.isPreparingGuide || planner.isRunning || !planner.request.hasDestination)
             if let status = planner.guidePreparationStatus {
                 Text(status)
                     .font(.footnote)

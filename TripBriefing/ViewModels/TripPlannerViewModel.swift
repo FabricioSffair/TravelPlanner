@@ -124,7 +124,7 @@ final class TripPlannerViewModel {
     }
 
     func run(settings: ProviderSettings) {
-        guard !isRunning, !isPreparingGuide else { return }
+        guard !isRunning, !isPreparingGuide, request.hasDestination else { return }
         if let reason = settings.agentsUnavailableReason {
             errorMessage = reason
             return
@@ -300,7 +300,7 @@ final class TripPlannerViewModel {
     /// cached index), without running any agent. With the on-device model unavailable and an
     /// OpenAI key set, this is the one place that spends OpenAI embedding credits outside a run.
     func prepareGuide(settings: ProviderSettings) {
-        guard !isRunning, !isPreparingGuide else { return }
+        guard !isRunning, !isPreparingGuide, request.hasDestination else { return }
         isPreparingGuide = true
         let destination = request.destination
         guidePreparationStatus = "Preparing \(destination)…"
