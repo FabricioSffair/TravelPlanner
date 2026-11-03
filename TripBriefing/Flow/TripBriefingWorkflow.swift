@@ -66,15 +66,13 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         ) }
         // Every date spelled out: given only a range, the on-device model returned one day of four.
         let dates = Self.dates(from: start, count: dayCount)
-        async let itinerary = reporting(TripAgents.Name.itinerary) { try await context.call(
-            agents.itinerary,
-            fallback: fallbackAgents?.itinerary,
-            prompt: """
+        async let itinerary = reporting(TripAgents.Name.itinerary) { try await planDays(
+            """
             Plan \(dayCount) day(s) in \(destination) from \(start) to \(end).
             Return exactly one entry in `days` for each of these dates: \(dates.joined(separator: ", ")).
             Traveler notes: \(notes.isEmpty ? "none" : notes)
             """,
-            onFallback: onFallback
+            context: context
         ) }
         async let phrasebook = reporting(TripAgents.Name.phrasebook) { try await context.call(
             agents.phrasebook,
@@ -101,13 +99,10 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         // Packing List agent through its tool (and searches the guide when it has one).
         // The fallback Concierge carries the cloud Packing List too: an overflow inside the
         // nested on-device agent surfaces here, and retrying it on-device would overflow again.
-        let briefing = try await reporting(TripAgents.Name.concierge) { try await context.call(
-            agents.concierge(guideTool: travelGuideTool),
-            fallback: fallbackAgents?.concierge(guideTool: travelGuideTool),
-            // The plain sentence first keeps Apple's language check on English. Without it, the
-            // place names and numbers below read as Indonesian (82 % for a Lisbon trip), and the
-            // iPhone model refuses the prompt with unsupportedLanguageOrLocale.
-            prompt: """
+        // The plain sentence first keeps Apple's language check on English. Without it, the
+        // place names and numbers below read as Indonesian (82 % for a Lisbon trip), and the
+        // iPhone model refuses the prompt with unsupportedLanguageOrLocale.
+        let conciergePrompt = """
             Write the trip briefing in English from the weather report and the itinerary below.
 
             Dates: \(start) to \(end) (\(dayCount) day(s)) in \(destination).
@@ -117,9 +112,27 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
 
             ITINERARY:
             \(itineraryText)
-            """,
-            onFallback: onFallback
-        ) }
+            """
+        let briefing = try await reporting(TripAgents.Name.concierge) {
+            do {
+                return try await context.call(
+                    agents.concierge(guideTool: travelGuideTool),
+                    fallback: fallbackAgents?.concierge(guideTool: travelGuideTool),
+                    prompt: conciergePrompt,
+                    onFallback: onFallback
+                )
+            } catch where travelGuideTool != nil && ContextFallback.isToolCallLimit(error) {
+                // The guide tool throws once its searches are spent, the one answer that ends the
+                // model's turn. The tips then come without the guide, as when it is off.
+                AppLog.warning("Guide search limit reached, Concierge run again without the guide")
+                return try await context.call(
+                    agents.concierge(guideTool: nil),
+                    fallback: fallbackAgents?.concierge(guideTool: nil),
+                    prompt: conciergePrompt,
+                    onFallback: onFallback
+                )
+            }
+        }
 
         return [
             OutputKey.briefing: .string(briefing),
@@ -152,15 +165,13 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         for date in missing + repeated {
             let others = plan.days.filter { $0.date != date }
             let used = Set(others.flatMap { $0.activities.map(\.placeName) }.filter { !$0.isEmpty })
-            let answer = try await context.call(
-                agents.itinerary,
-                fallback: fallbackAgents?.itinerary,
-                prompt: """
+            let answer = try await planDays(
+                """
                 Plan one day in \(destination): \(date). Return exactly one entry in `days`, for \(date).
                 Places already planned on other days, so pick different ones: \(used.sorted().joined(separator: ", ")).
                 Traveler notes: \(notes.isEmpty ? "none" : notes)
                 """,
-                onFallback: onFallback
+                context: context
             )
             onAgentResult(TripAgents.Name.itinerary, answer)
             // Keyed to the date asked for, whatever date the model wrote.
@@ -176,6 +187,46 @@ struct TripBriefingWorkflow: RTSOrchestratorNode {
         }
         return merged
     }
+
+    /// The Local Guide's answer to `prompt`. Once PlacesSearch's calls are spent, the tool throws to
+    /// end the turn (the on-device model kept searching after every note to stop), and the days
+    /// are planned without tools from the places already found. A repair after that goes straight
+    /// to the planner without tools.
+    func planDays(_ prompt: String, context: RTSRunContext) async throws -> String {
+        if !agents.places.isLimitReached {
+            do {
+                return try await context.call(
+                    agents.itinerary, fallback: fallbackAgents?.itinerary, prompt: prompt, onFallback: onFallback
+                )
+            } catch where ContextFallback.isToolCallLimit(error) {
+                AppLog.warning("PlacesSearch limit reached, Local Guide planned from found places", properties: [
+                    "Places": "\(agents.places.foundPlaces.count)",
+                ])
+            }
+        }
+        // Only places the prompt does not already name as planned, and at most
+        // `maxPlacesWithoutSearch`: given all 70 found for Vancouver, the on-device model worked on
+        // one day for three minutes until its context filled.
+        let found = agents.places.foundPlaces
+            .filter { !prompt.contains($0.name) }
+            .prefix(Self.maxPlacesWithoutSearch)
+            .map { place in
+                "- \(place.name) (\([place.category, place.locality].filter { !$0.isEmpty }.joined(separator: ", ")))"
+            }
+        return try await context.call(
+            agents.itineraryFromPlaces,
+            fallback: fallbackAgents?.itineraryFromPlaces,
+            prompt: """
+            \(prompt)
+            Places found:
+            \(found.isEmpty ? "none" : found.joined(separator: "\n"))
+            """,
+            onFallback: onFallback
+        )
+    }
+
+    /// Places listed for the Local Guide without tools, at most.
+    static let maxPlacesWithoutSearch = 15
 
     /// Days asked for again because of their places, at most. Each one is another on-device call.
     static let maxReplannedDays = 4

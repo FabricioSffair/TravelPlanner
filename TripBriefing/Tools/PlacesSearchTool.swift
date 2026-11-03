@@ -30,13 +30,27 @@ final class PlacesSearchSession: Sendable {
     /// Apple Maps searches one briefing may make. A repeated query is answered from the cache
     /// and does not count.
     static let maxSearches = 12
+    /// PlacesSearch calls one briefing may make, cached ones included. Measured in the simulator:
+    /// once every result was handed out, the on-device model repeated the same four queries for
+    /// minutes, each answered empty from the cache, until its context filled. It kept going after
+    /// a "no more searches" note too, so the call after that note throws `LimitReached`, the one
+    /// answer that ends the model's turn.
+    static let maxCalls = 16
     /// Results handed out per call. Apple Maps returns more; the rest come out on later calls.
     static let resultsPerCall = 6
+
+    /// Thrown by PlacesSearch once `maxCalls` is spent. The workflow catches it and plans from
+    /// `foundPlaces` without tools.
+    struct LimitReached: Error, CustomStringConvertible {
+        var description: String { "PlacesSearch ToolCallLimitReached" }
+    }
 
     private struct State {
         var cache: [String: [Place]] = [:]
         var shown: Set<String> = []
+        var found: [Place] = []
         var searches = 0
+        var calls = 0
     }
     private let state = Mutex(State())
 
@@ -44,15 +58,30 @@ final class PlacesSearchSession: Sendable {
         case cached([Place])
         case search
         case limitReached
+        /// The model was told there are no more searches and searched again.
+        case stop
     }
 
     func lookup(_ key: String) -> Lookup {
         state.withLock { state in
+            state.calls += 1
+            if state.calls == Self.maxCalls + 1 { return .limitReached }
+            guard state.calls <= Self.maxCalls else { return .stop }
             if let places = state.cache[key] { return .cached(places) }
             guard state.searches < Self.maxSearches else { return .limitReached }
             state.searches += 1
             return .search
         }
+    }
+
+    /// True once every call this briefing may make is spent.
+    var isLimitReached: Bool {
+        state.withLock { $0.calls >= Self.maxCalls }
+    }
+
+    /// Every place handed out so far, in the order it was handed out.
+    var foundPlaces: [Place] {
+        state.withLock { $0.found }
     }
 
     func store(_ places: [Place], for key: String) {
@@ -65,6 +94,7 @@ final class PlacesSearchSession: Sendable {
             let unseen = places.filter { !state.shown.contains($0.name.lowercased()) }
             let taken = Array(unseen.prefix(Self.resultsPerCall))
             state.shown.formUnion(taken.map { $0.name.lowercased() })
+            state.found.append(contentsOf: taken)
             return taken
         }
     }
@@ -92,6 +122,8 @@ struct PlacesSearchTool: RTSToolNode {
                 places = cached
             case .limitReached:
                 return Self.answer([], note: "No more searches for this trip. Plan with the places you already have.")
+            case .stop:
+                throw PlacesSearchSession.LimitReached()
             case .search:
                 let request = MKLocalSearch.Request()
                 request.naturalLanguageQuery = "\(query) in \(place)"
@@ -121,7 +153,7 @@ struct PlacesSearchTool: RTSToolNode {
             guard !unseen.isEmpty else {
                 let note = places.isEmpty
                     ? "Apple Maps found nothing for this. Try a different kind of place."
-                    : "Every result for this search was already suggested on another day. Search for a different kind of place."
+                    : "Every result for this search was already suggested. Do not search for this again. Plan with the places you already have."
                 return Self.answer([], note: note)
             }
             return Self.answer(unseen)
@@ -144,7 +176,7 @@ struct PlacesSearchTool: RTSToolNode {
         return answer
     }
 
-    var toolDescription = "Finds real points of interest (museums, restaurants, parks, viewpoints, neighborhoods) in a place using Apple Maps. Returns up to 6 results with name, category, locality (town or city) and address, never a place it already returned in this trip. Search again with the same words to get more places of that kind."
+    var toolDescription = "Finds real points of interest (museums, restaurants, parks, viewpoints, neighborhoods) in a place using Apple Maps. Returns up to 6 results with name, category, locality (town or city) and address, never a place it already returned in this trip."
 
     var parameterSchema: RTSToolSchema {
         RTSToolSchema(parameters: [

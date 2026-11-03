@@ -4,7 +4,8 @@
 //
 //  Retrieval over the briefing itself: once a run finishes, its weather report,
 //  itinerary, day plans, packing list, tips and phrasebook are embedded with the
-//  same embedder as the travel guide, so the Trip Assistant can search them.
+//  same embedder as the travel guide, so the Trip Assistant can search them. With
+//  no embedder, they go to Spotlight and are searched by keyword, like the guide.
 //
 //  The briefing is short, but the on-device model's context is small (4,096
 //  tokens on iOS 26, 8,192 on iOS 27), and the briefing plus guide passages do
@@ -37,12 +38,15 @@ struct TripNoteHit: Sendable, Hashable {
 /// One briefing's notes, indexed and ready to search.
 struct TripNotes: Sendable {
     let destination: String
-    /// "on-device" or "OpenAI embeddings".
+    /// "on-device", "OpenAI embeddings" or "Spotlight".
     let embedderLabel: String
     let noteCount: Int
     /// The notes as indexed, for the exact day match in `search`.
     let notes: [TripNote]
-    let runtime: RTSRAGRetrievalRuntime
+    let retriever: PassageRetriever
+
+    /// True when the notes are in Spotlight, which matches words rather than meaning.
+    var isKeywordSearch: Bool { retriever.isKeywordSearch }
 
     /// Vector search, with any day or part the query names put first. The on-device embeddings
     /// barely tell "day 2" from "day 4", so "What is the plan for day 2?" would otherwise return
@@ -74,16 +78,13 @@ struct TripNotes: Sendable {
         let named = order
             .compactMap { part in notes.first { $0.part == part } }
             .map { TripNoteHit(content: "\(destination) trip › \($0.part): \($0.text)", part: $0.part, score: 1) }
-        let result = try await runtime.retrieve(query, topK: topK)
+        // Every note starts with "<destination> trip", so a keyword search leaves those words out.
+        let passages = try await retriever.retrieve(
+            query, topK: topK, labelKey: TripNotes.partKey, ignoring: PassageRetriever.words(of: destination)
+        )
         let namedSet = Set(order)
-        let vector = result.entries
-            .map { hit in
-                var part = "Briefing"
-                if case .string(let name)? = hit.entry.metadata[TripNotes.partKey] {
-                    part = name
-                }
-                return TripNoteHit(content: hit.entry.content, part: part, score: Double(hit.score))
-            }
+        let vector = passages
+            .map { TripNoteHit(content: $0.content, part: $0.label ?? "Briefing", score: $0.score) }
             .filter { !namedSet.contains($0.part) }
         var hits = Array(named.prefix(topK))
         let room = topK - hits.count
@@ -222,7 +223,12 @@ extension TravelGuideLibrary {
     /// previous store.
     /// - Parameter openAIKey: used only when the on-device model is unavailable.
     func tripNotes(_ notes: [TripNote], destination: String, openAIKey: String?) async throws -> TripNotes {
-        let selection = try await selectEmbedder(openAIKey: openAIKey)
+        let selection: Selection
+        do {
+            selection = try await selectEmbedder(openAIKey: openAIKey)
+        } catch TravelGuideError.embedderUnavailable {
+            return try await spotlightTripNotes(notes, destination: destination)
+        }
         let root = FileManager.default
             .urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("TripNotes", isDirectory: true)
@@ -232,14 +238,7 @@ extension TravelGuideLibrary {
             .appendingPathComponent(selection.cacheKey, isDirectory: true)
 
         let source = URL(string: "trip-notes://\(Self.slug(destination))")!
-        let documents = notes.map { note in
-            RTSRAGDocument(
-                content: "\(destination) trip › \(note.part): \(note.text)",
-                type: .text,
-                source: "\(source.absoluteString)#\(Self.slug(note.part))",
-                metadata: [TripNotes.partKey: .string(note.part)]
-            )
-        }
+        let documents = Self.noteDocuments(notes, destination: destination, source: source)
 
         let store = try RTSRAGFileStore(directory: directory)
         let runtime = RTSRAGRetrievalRuntime(embedder: selection.embedder, store: store)
@@ -257,8 +256,52 @@ extension TravelGuideLibrary {
             embedderLabel: selection.label,
             noteCount: documents.count,
             notes: notes,
-            runtime: runtime
+            retriever: .vector(runtime)
         )
+    }
+
+    /// The notes when no embedder can be used, donated to Spotlight for keyword search. Only the
+    /// latest briefing is kept: each call clears the namespace first.
+    ///
+    /// Each call donates under a fresh source. Spotlight only queues the delete, and the ingest
+    /// skips a document it already holds at the same content, so under the old source the same
+    /// notes could be skipped, then deleted, leaving nothing.
+    private func spotlightTripNotes(_ notes: [TripNote], destination: String) async throws -> TripNotes {
+        let feeder = RTSRAGSpotlightFeeder(namespace: Self.spotlightNamespace("tripnotes"))
+        do {
+            try await feeder.deleteAll()
+        } catch {
+            throw TravelGuideError.spotlightFailed(Self.shortReason(error))
+        }
+        let source = URL(string: "trip-notes://\(UUID().uuidString)/\(Self.slug(destination))")!
+        let documents = Self.noteDocuments(notes, destination: destination, source: source)
+        let stats = try await Self.donate(documents, source: source, to: feeder, sweepsOrphans: false)
+        guard stats.documentsCommitted > 0 else {
+            throw TravelGuideError.spotlightFailed("none of \(documents.count) notes stored")
+        }
+        let partsBySource = Dictionary(
+            zip(documents.compactMap(\.source), notes.map(\.part)),
+            uniquingKeysWith: { first, _ in first }
+        )
+        return TripNotes(
+            destination: destination,
+            embedderLabel: Self.spotlightLabel,
+            noteCount: documents.count,
+            notes: notes,
+            retriever: .spotlight(RTSRAGSpotlightSearcher(feeder: feeder), labels: partsBySource)
+        )
+    }
+
+    /// One document per note, under `source#<part>`.
+    private static func noteDocuments(_ notes: [TripNote], destination: String, source: URL) -> [RTSRAGDocument] {
+        notes.map { note in
+            RTSRAGDocument(
+                content: "\(destination) trip › \(note.part): \(note.text)",
+                type: .text,
+                source: "\(source.absoluteString)#\(slug(note.part))",
+                metadata: [TripNotes.partKey: .string(note.part)]
+            )
+        }
     }
 }
 
@@ -319,16 +362,22 @@ final class TripAnswerSourceCollector: Sendable {
 enum TripNotesTool {
     static let name = "SearchTrip"
 
-    static func make(notes: TripNotes, collector: TripAnswerSourceCollector) -> RTSKnowledgeSearchTool {
-        RTSKnowledgeSearchTool(
+    /// - Parameter maxSearches: searches the tool answers before it throws `SearchLimitReached`;
+    ///   `nil` for no limit.
+    static func make(notes: TripNotes, collector: TripAnswerSourceCollector, maxSearches: Int? = nil) -> RTSKnowledgeSearchTool {
+        let searches = SearchCounter()
+        return RTSKnowledgeSearchTool(
             toolName: name,
             toolDescription: """
             Searches the traveler's own \(notes.destination) briefing: the trip dates and notes, the \
             daily weather forecast, the itinerary and day-by-day plan, the packing list, the practical \
             tips and the phrasebook. Returns passages with the part of the briefing they came from. \
             An empty result means the briefing does not cover it.
-            """,
+            """ + (notes.isKeywordSearch ? " " + PassageRetriever.keywordSearchHint : ""),
             source: RTSClosureKnowledgeSource { query in
+                if let maxSearches, searches.next() > maxSearches {
+                    throw SearchLimitReached(toolName: name)
+                }
                 let found = try await notes.search(query.text, topK: query.topK)
                 collector.record(found.map(\.sourceLabel))
                 return found.map { hit in

@@ -25,6 +25,11 @@ enum TripAgents {
     struct Set: Sendable {
         let weather: RTSAgent
         let itinerary: RTSAgent
+        /// The Local Guide without tools, for when PlacesSearch's calls are spent: it plans from
+        /// the places listed in its prompt.
+        let itineraryFromPlaces: RTSAgent
+        /// The PlacesSearch memory `itinerary` uses, shared with the fallback set.
+        let places: PlacesSearchSession
         let phrasebook: RTSAgent
         let concierge: RTSAgent
         let cloud: RTSLLMProvider
@@ -92,6 +97,27 @@ enum TripAgents {
             ]
         )
 
+        // Track 2 once PlacesSearch is spent: the same plan, from the places already found.
+        let itineraryFromPlaces = RTSAgent(
+            llmProvider: cloud,
+            name: Name.itinerary,
+            systemMessage: """
+            You are a local guide. Plan with the places listed under "Places found", using each place \
+            once where you can. Return one entry in `days` for every date you are asked for, with `date` \
+            as yyyy-MM-dd and exactly three `activities` in order, with `slot` "Morning", "Afternoon" and \
+            "Evening". For each activity, `title` is a few words, `place` is the place's name exactly as \
+            listed, and `details` is one sentence. `area` is the place's locality, or for a day trip the \
+            town the traveler visits. When the list has too few places, use well-known places you are \
+            sure exist. Respect the traveler's notes.
+            """,
+            outputSchema: Itinerary.rtsSchema,
+            // The place list makes the prompt longer than the searching Local Guide's.
+            inputGuardrails: [
+                try RTSPIIRedactInputGuardrail(),
+                RTSLengthInputGuardrail(maxCharacters: 6000),
+            ]
+        )
+
         // Track 3: no tools, structured output, on-device when possible.
         let phrasebook = RTSAgent(
             llmProvider: phrasebookProvider,
@@ -138,6 +164,8 @@ enum TripAgents {
         return Set(
             weather: weather,
             itinerary: itinerary,
+            itineraryFromPlaces: itineraryFromPlaces,
+            places: places,
             phrasebook: phrasebook,
             concierge: concierge,
             cloud: cloud,

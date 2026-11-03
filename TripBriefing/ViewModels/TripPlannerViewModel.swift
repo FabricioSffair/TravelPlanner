@@ -83,6 +83,12 @@ final class TripPlannerViewModel {
     /// that it runs ungrounded, exactly as with grounding off.
     static let guideWaitAfterFirstPhase: Double = 10
 
+    /// Guide searches the Concierge may make in one briefing. Its prompt asks for four; with every
+    /// search empty, the on-device model went on searching until its context filled.
+    static let conciergeGuideSearches = 8
+    /// Searches of each tool, briefing and guide, the Chat tab and Siri may make for one question.
+    static let chatSearchesPerTool = 6
+
     /// Identifies this run's guide, so a late result from an earlier run cannot touch the row.
     private var guideRunToken = UUID()
     /// The row has reached its final state for this run; later updates are ignored.
@@ -245,7 +251,9 @@ final class TripPlannerViewModel {
                 self.guideArticleURL = guide.articleURL
                 self.tripGuide = guide
                 self.chatGuide = guide
-                return TravelGuideTool.make(guide: guide, collector: collector)
+                return TravelGuideTool.make(
+                    guide: guide, collector: collector, maxSearches: Self.conciergeGuideSearches
+                )
             } catch {
                 if case RTSRAGError.embeddingModelMismatch = error {
                     await library.discard(destination: destination)
@@ -424,8 +432,12 @@ final class TripPlannerViewModel {
         func assistant(on provider: RTSLLMProvider) -> RTSAgent {
             TripAgents.tripAssistant(
                 provider: provider,
-                notesTool: notes.map { TripNotesTool.make(notes: $0, collector: notesCollector) },
-                guideTool: guide.map { TravelGuideTool.make(guide: $0, collector: guideCollector) },
+                notesTool: notes.map {
+                    TripNotesTool.make(notes: $0, collector: notesCollector, maxSearches: Self.chatSearchesPerTool)
+                },
+                guideTool: guide.map {
+                    TravelGuideTool.make(guide: $0, collector: guideCollector, maxSearches: Self.chatSearchesPerTool)
+                },
                 tripDays: days
             )
         }
@@ -471,6 +483,12 @@ final class TripPlannerViewModel {
                         self?.updateMessage(reply.id) { $0.model = "Apple Intelligence → \(fallbackProvider.callTreeLabel)" }
                     }
                 )
+            } catch where ContextFallback.isToolCallLimit(error) {
+                // The search tool threw to end the model's turn after `chatSearchesPerTool`
+                // searches: with every search empty, it would otherwise search until its context
+                // fills. Not an error: the briefing and the guide do not cover the question.
+                answer = "I searched your briefing and the travel guide several times and found nothing for this. Try other words, for example a place, a day or a topic such as \"transit\"."
+                AppLog.warning("Chat search limit reached", properties: chatProperties)
             } catch {
                 failed = true
                 answer = ContextFallback.isContextOverflow(error) ? "\(error)\n\(overflowHint)" : "\(error)"

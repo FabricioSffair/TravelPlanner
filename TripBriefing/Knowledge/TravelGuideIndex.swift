@@ -5,12 +5,14 @@
 //  Retrieval over the destination's Wikivoyage article: fetch it as plain
 //  text, keep the practical sections, embed them (on-device when the model is
 //  present, otherwise OpenAI) and store the vectors per destination and
-//  embedder under Caches. Foundation, NaturalLanguage and RailtracksSwiftRAG
-//  only, so the same file compiles into a command-line check.
+//  embedder under Caches. With no embedder at all, the sections go to Spotlight
+//  instead and are searched by keyword. Foundation, Combine, NaturalLanguage and
+//  RailtracksSwiftRAG only, so the same file compiles into a command-line check.
 //
 //  Wikivoyage text is CC BY-SA 4.0; anything shown from it needs attribution.
 //
 
+import Combine
 import Foundation
 import NaturalLanguage
 import Synchronization
@@ -187,6 +189,8 @@ enum TravelGuideError: Error, CustomStringConvertible {
     case embedderUnavailable(String)
     /// `what` did not finish in time.
     case timedOut(String)
+    /// Donating to Spotlight, the fallback when no embedder can be used, failed.
+    case spotlightFailed(String)
 
     var description: String {
         switch self {
@@ -196,6 +200,7 @@ enum TravelGuideError: Error, CustomStringConvertible {
         case .incompleteIngest(let detail): "indexing incomplete: \(detail)"
         case .embedderUnavailable(let reason): reason
         case .timedOut(let what): "\(what) timed out"
+        case .spotlightFailed(let detail): "Spotlight indexing failed: \(detail)"
         }
     }
 
@@ -291,31 +296,135 @@ struct TravelGuideHit: Sendable, Hashable {
     var sourceLabel: String { "Wikivoyage › \(city) › \(section)" }
 }
 
+/// Where a guide's or a trip's passages are searched: a vector store, or Spotlight when no
+/// embedder can be used.
+enum PassageRetriever: Sendable {
+    case vector(RTSRAGRetrievalRuntime)
+    /// Keyword search. A Spotlight hit carries its document's source but no metadata, so `labels`
+    /// maps each source this index donated to its section or part. Hits from any other source are
+    /// dropped.
+    case spotlight(RTSRAGSpotlightSearcher, labels: [String: String])
+
+    /// One retrieved passage. `label` is the section or part, `nil` when the store has none.
+    struct Passage: Sendable {
+        let content: String
+        let label: String?
+        let score: Double
+    }
+
+    /// Appended to a search tool's description when the search is by keyword. No "search again":
+    /// told that, the on-device Concierge searched 57 times, all empty, until its context filled.
+    static let keywordSearchHint = """
+    This search matches words, not meaning: use one or two specific words, for example "transit" \
+    or "SIM".
+    """
+
+    var isKeywordSearch: Bool {
+        if case .spotlight = self { true } else { false }
+    }
+
+    /// At most `topK` passages, best first. `labelKey` is the metadata key the vector store keeps
+    /// the label under. `ignoring` lists words every passage of this index holds, such as the
+    /// city's name; keyword search leaves them out (see `keywordTerms`).
+    func retrieve(_ query: String, topK: Int, labelKey: String, ignoring: Set<String> = []) async throws -> [Passage] {
+        switch self {
+        case .vector(let runtime):
+            let result = try await runtime.retrieve(query, topK: topK)
+            return result.entries.map { hit in
+                var label: String?
+                if case .string(let name)? = hit.entry.metadata[labelKey] {
+                    label = name
+                }
+                return Passage(content: hit.entry.content, label: label, score: Double(hit.score))
+            }
+        case .spotlight(let searcher, let labels):
+            // Spotlight returns a passage only when it holds every word of the query, so "safety
+            // Vancouver" found nothing. The whole query runs first, then each of its words alone;
+            // a passage ranks by how many of the searches found it, then by its best rank.
+            let terms = Self.keywordTerms(of: query, ignoring: ignoring)
+            let queries = [query] + terms.filter { $0 != query.lowercased() }
+            var found: [String: (text: String, label: String, matches: Int, rank: Int)] = [:]
+            for text in queries {
+                // Asks for more than needed: the namespace also holds other cities' guides, and an
+                // earlier trip's notes until their deletion lands, and those are dropped here.
+                for hit in try await searcher.search(text, limit: max(topK * 4, 20)) {
+                    guard let source = hit.source, let label = labels[source] else { continue }
+                    if var match = found[hit.identifier] {
+                        match.matches += 1
+                        match.rank = min(match.rank, hit.rank)
+                        found[hit.identifier] = match
+                    } else {
+                        found[hit.identifier] = (hit.text, label, 1, hit.rank)
+                    }
+                }
+            }
+            let ranked = found.values.sorted { ($0.matches, -$0.rank) > ($1.matches, -$1.rank) }
+            // Spotlight ranks but does not score, so the score falls with the rank.
+            return ranked.prefix(topK).enumerated().map { rank, hit in
+                Passage(content: hit.text, label: hit.label, score: 1 / Double(rank + 1))
+            }
+        }
+    }
+
+    /// Words that are left out of keyword searches: they match nearly every passage or none.
+    private static let stopWords: Set<String> = [
+        "the", "and", "for", "with", "how", "what", "where", "when", "from", "about", "into",
+        "near", "including", "tips", "local", "city", "trip", "best",
+    ]
+
+    /// The words of `query` worth a keyword search of their own, lowercased, in order, without
+    /// short words, `stopWords` or `ignoring`. A plural or "-ing"/"-ed" ending is cut, because
+    /// Spotlight matches the start of a word: "connect" finds "connected" and "connectivity",
+    /// "connected" does not find "connect".
+    static func keywordTerms(of query: String, ignoring: Set<String>) -> [String] {
+        var seen = Set<String>()
+        return query.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 && !stopWords.contains($0) && !ignoring.contains($0) }
+            .map { word in
+                for suffix in ["ing", "ed", "s"] where word.hasSuffix(suffix) && word.count - suffix.count >= 4 {
+                    return String(word.dropLast(suffix.count))
+                }
+                return word
+            }
+            .filter { seen.insert($0).inserted }
+    }
+
+    /// The lowercased words of `name`, for `retrieve(_:topK:labelKey:ignoring:)`.
+    static func words(of name: String) -> Set<String> {
+        Set(name.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+}
+
 /// One destination's indexed guide, ready to search.
 struct TravelGuide: Sendable {
     let city: String
     let articleTitle: String
     let articleURL: URL
     let sections: [String]
-    /// "on-device" or "OpenAI embeddings".
+    /// "on-device", "OpenAI embeddings" or "Spotlight".
     let embedderLabel: String
     /// True when the store was reused rather than embedded in this call.
     let fromCache: Bool
-    let runtime: RTSRAGRetrievalRuntime
+    let retriever: PassageRetriever
+
+    /// True when the guide is in Spotlight, which matches words rather than meaning.
+    var isKeywordSearch: Bool { retriever.isKeywordSearch }
 
     func search(_ query: String, topK: Int) async throws -> [TravelGuideHit] {
-        let result = try await runtime.retrieve(query, topK: topK)
-        return result.entries.map { hit in
-            var section = "Guide"
-            if case .string(let name)? = hit.entry.metadata[TravelGuideLibrary.MetadataKey.section] {
-                section = name
-            }
-            return TravelGuideHit(
-                content: hit.entry.content,
+        // Every passage starts with the city's name, so a keyword search leaves it out.
+        let passages = try await retriever.retrieve(
+            query, topK: topK, labelKey: TravelGuideLibrary.MetadataKey.section,
+            ignoring: PassageRetriever.words(of: city)
+        )
+        return passages.map { passage in
+            TravelGuideHit(
+                content: passage.content,
                 city: city,
-                section: section,
+                section: passage.label ?? "Guide",
                 articleURL: articleURL,
-                score: Double(hit.score)
+                score: passage.score
             )
         }
     }
@@ -326,8 +435,9 @@ struct TravelGuide: Sendable {
 ///
 /// Embedder choice, per call: Apple's on-device model when its assets are already on the device
 /// (checked without downloading) and it loads within ``prepareTimeout``; otherwise OpenAI
-/// `text-embedding-3-small` when an OpenAI key is given; otherwise the guide is unavailable.
-/// A store is locked to one embedding model, so each embedder has its own store.
+/// `text-embedding-3-small` when an OpenAI key is given; otherwise no embedder, and the guide is
+/// donated to Spotlight and searched by keyword (the simulator, where the on-device model does
+/// not load). A store is locked to one embedding model, so each embedder has its own store.
 actor TravelGuideLibrary {
 
     enum MetadataKey {
@@ -371,6 +481,29 @@ actor TravelGuideLibrary {
         let sections: [String]
         let embeddingModel: String
         let indexedAt: Date
+    }
+
+    /// Written under `spotlight/` after every section of a guide was donated to Spotlight. Spotlight
+    /// hits come back without metadata, so this keeps each source's section for citations.
+    private struct SpotlightManifest: Codable {
+        let formatVersion: Int
+        let city: String
+        let articleTitle: String
+        let articleURL: URL
+        let sections: [String]
+        /// `<articleURL>#<Section>` → `<Section>`, one per donated section.
+        let sectionsBySource: [String: String]
+        let indexedAt: Date
+    }
+
+    /// Shown where an embedder's label would be, and the directory name of the Spotlight manifest.
+    static let spotlightLabel = "Spotlight"
+    static let spotlightCacheKey = "spotlight"
+
+    /// The Spotlight namespace for `name` ("guide" or "tripnotes"), under the bundle id. Neither
+    /// name is a prefix of the other, so one namespace's `deleteAll()` never reaches the other.
+    nonisolated static func spotlightNamespace(_ name: String) -> String {
+        "\(Bundle.main.bundleIdentifier ?? "TripBriefing").\(name)"
     }
 
     /// Feeds in-memory documents to `ingest`, no temp files.
@@ -459,7 +592,10 @@ actor TravelGuideLibrary {
     /// description is "RTSRAGEmbeddingError error 1"; the text holds the real reason in quotes
     /// (`Code=7 "Embedding model requires compilation"`), after an asset path and domain.
     nonisolated static func shortReason(_ error: Error) -> String {
-        let text = "\(error)"
+        shortReason("\(error)")
+    }
+
+    nonisolated static func shortReason(_ text: String) -> String {
         if let match = text.firstMatch(of: #/Code=-?\d+ "([^"]+)"/#) {
             return String(match.1)
         }
@@ -503,7 +639,13 @@ actor TravelGuideLibrary {
         defer { lastTimings = timings }
 
         var clock = Date()
-        let selection = try await selectEmbedder(openAIKey: openAIKey)
+        let selection: Selection
+        do {
+            selection = try await selectEmbedder(openAIKey: openAIKey)
+        } catch TravelGuideError.embedderUnavailable {
+            timings.prepare = Date().timeIntervalSince(clock)
+            return try await spotlightGuide(for: destination, timings: &timings)
+        }
         let embedder = selection.embedder
         timings.prepare = Date().timeIntervalSince(clock)
 
@@ -515,7 +657,7 @@ actor TravelGuideLibrary {
         if let guide = await storedGuide(in: directory, selection: selection) {
             return guide
         }
-        if readManifest(at: manifestURL) != nil {
+        if readManifest(Manifest.self, at: manifestURL) != nil {
             // Older format, another embedder, or unreadable: start clean.
             try? FileManager.default.removeItem(at: directory)
         }
@@ -523,29 +665,9 @@ actor TravelGuideLibrary {
         // ingest below skips sections already stored complete, so a partial store resumes.
 
         clock = Date()
-        guard let article = try await WikivoyageClient.fetchArticle(for: destination) else {
-            throw TravelGuideError.articleNotFound(destination)
-        }
+        let (article, sections, documents) = try await fetchDocuments(for: destination)
         timings.fetch = Date().timeIntervalSince(clock)
-
-        let sections = WikivoyageSections.practicalSections(of: article.extract)
-        guard !sections.isEmpty else {
-            throw TravelGuideError.noPracticalSections(article.title)
-        }
         let displayCity = article.title
-        let documents = sections.map { section in
-            RTSRAGDocument(
-                content: "\(displayCity) › \(section.name): \(section.text)",
-                type: .text,
-                // Stable per section, so a re-ingest replaces rather than duplicates.
-                source: "\(article.url.absoluteString)#\(section.name)",
-                metadata: [
-                    MetadataKey.section: .string(section.name),
-                    MetadataKey.articleURL: .string(article.url.absoluteString),
-                    MetadataKey.city: .string(displayCity),
-                ]
-            )
-        }
 
         clock = Date()
         let store = try RTSRAGFileStore(directory: directory)
@@ -589,8 +711,156 @@ actor TravelGuideLibrary {
             sections: sections.map(\.name),
             embedderLabel: selection.label,
             fromCache: false,
-            runtime: runtime
+            retriever: .vector(runtime)
         )
+    }
+
+    /// The destination's article and its practical sections, one document per section.
+    private func fetchDocuments(
+        for destination: String
+    ) async throws -> (WikivoyageArticle, [WikivoyageSection], [RTSRAGDocument]) {
+        guard let article = try await WikivoyageClient.fetchArticle(for: destination) else {
+            throw TravelGuideError.articleNotFound(destination)
+        }
+        let sections = WikivoyageSections.practicalSections(of: article.extract)
+        guard !sections.isEmpty else {
+            throw TravelGuideError.noPracticalSections(article.title)
+        }
+        let displayCity = article.title
+        let documents = sections.map { section in
+            RTSRAGDocument(
+                content: "\(displayCity) › \(section.name): \(section.text)",
+                type: .text,
+                // Stable per section, so a re-ingest replaces rather than duplicates.
+                source: "\(article.url.absoluteString)#\(section.name)",
+                metadata: [
+                    MetadataKey.section: .string(section.name),
+                    MetadataKey.articleURL: .string(article.url.absoluteString),
+                    MetadataKey.city: .string(displayCity),
+                ]
+            )
+        }
+        return (article, sections, documents)
+    }
+
+    // MARK: Spotlight
+
+    /// The guide when no embedder can be used: the same sections, donated to Spotlight with the
+    /// SDK's default sentence chunker and searched by keyword. Reused without fetching when the
+    /// manifest says every section was donated and Spotlight still holds them.
+    private func spotlightGuide(for destination: String, timings: inout Timings) async throws -> TravelGuide {
+        let directory = cityDirectory(for: destination)
+            .appendingPathComponent(Self.spotlightCacheKey, isDirectory: true)
+        if let guide = await storedSpotlightGuide(in: directory) {
+            return guide
+        }
+
+        var clock = Date()
+        let (article, sections, documents) = try await fetchDocuments(for: destination)
+        timings.fetch = Date().timeIntervalSince(clock)
+
+        clock = Date()
+        let feeder = RTSRAGSpotlightFeeder(namespace: Self.spotlightNamespace("guide"))
+        // Every city shares this namespace. The loader's stream states no root, so the SDK would
+        // not sweep anyway; off to make that explicit, since a sweep sees only one city's sections.
+        let stats = try await Self.donate(documents, source: article.url, to: feeder, sweepsOrphans: false)
+        timings.ingest = Date().timeIntervalSince(clock)
+        timings.stats = stats
+        guard stats.documentsCommitted + stats.documentsSkipped > 0 else {
+            throw TravelGuideError.spotlightFailed("none of \(documents.count) sections stored")
+        }
+
+        let sectionsBySource = Dictionary(
+            zip(documents.compactMap(\.source), sections.map(\.name)),
+            uniquingKeysWith: { first, _ in first }
+        )
+        if stats.documentsCommitted + stats.documentsSkipped == documents.count {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            writeManifest(
+                SpotlightManifest(
+                    formatVersion: Self.indexFormatVersion,
+                    city: article.title,
+                    articleTitle: article.title,
+                    articleURL: article.url,
+                    sections: sections.map(\.name),
+                    sectionsBySource: sectionsBySource,
+                    indexedAt: Date()
+                ),
+                to: directory.appendingPathComponent("guide.json")
+            )
+        }
+        return TravelGuide(
+            city: article.title,
+            articleTitle: article.title,
+            articleURL: article.url,
+            sections: sections.map(\.name),
+            embedderLabel: Self.spotlightLabel,
+            fromCache: false,
+            retriever: .spotlight(RTSRAGSpotlightSearcher(feeder: feeder), labels: sectionsBySource)
+        )
+    }
+
+    /// The Spotlight guide in `directory` when its manifest matches this format and Spotlight
+    /// still holds every section it lists. One query, not a per-section staleness check.
+    private func storedSpotlightGuide(in directory: URL) async -> TravelGuide? {
+        guard let manifest = readManifest(SpotlightManifest.self, at: directory.appendingPathComponent("guide.json")),
+              manifest.formatVersion == Self.indexFormatVersion
+        else { return nil }
+        let feeder = RTSRAGSpotlightFeeder(namespace: Self.spotlightNamespace("guide"))
+        let root = RTSRAGSourceRoot(path: manifest.articleURL.absoluteString)
+        guard let held = try? await feeder.documents(under: root),
+              Set(held.values).isSuperset(of: manifest.sectionsBySource.keys)
+        else { return nil }
+        return TravelGuide(
+            city: manifest.city,
+            articleTitle: manifest.articleTitle,
+            articleURL: manifest.articleURL,
+            sections: manifest.sections,
+            embedderLabel: Self.spotlightLabel,
+            fromCache: true,
+            retriever: .spotlight(RTSRAGSpotlightSearcher(feeder: feeder), labels: manifest.sectionsBySource)
+        )
+    }
+
+    /// Donates `documents` to Spotlight with the SDK's default sentence chunker, as its demo does.
+    /// A failed donation does not throw from the SDK but is withheld, so the first withheld reason
+    /// is read from the event stream and thrown here, naming Spotlight.
+    static func donate(
+        _ documents: [RTSRAGDocument],
+        source: URL,
+        to feeder: RTSRAGSpotlightFeeder,
+        sweepsOrphans: Bool
+    ) async throws -> RTSRAGIngestionStats {
+        let runtime = RTSRAGSpotlightIngestRuntime(feeder: feeder)
+        let withheld = FirstReason()
+        let subscription = runtime.eventPublisher.sink { event in
+            guard case .documentWithheld(_, let reason) = event else { return }
+            switch reason {
+            case .transient(let text), .unchunkable(let text): withheld.record(text)
+            case .unembeddable: withheld.record("not stored")
+            }
+        }
+        defer { subscription.cancel() }
+
+        let stats: RTSRAGIngestionStats
+        do {
+            stats = try await runtime.ingest(
+                loader: InMemoryLoader(source: source, documents: documents),
+                chunker: RTSRAGSentenceChunker(),
+                sweepsOrphans: sweepsOrphans
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw TravelGuideError.spotlightFailed(shortReason(error))
+        }
+        guard stats.documentsWithheld == 0 else {
+            let reason = withheld.first.map { " (\(shortReason($0)))" } ?? ""
+            throw TravelGuideError.spotlightFailed(
+                "\(stats.documentsWithheld) of \(documents.count) documents not stored\(reason)"
+            )
+        }
+        return stats
     }
 
     /// Removes a destination's stores, for every embedder, e.g. after an embedder mismatch.
@@ -613,7 +883,14 @@ actor TravelGuideLibrary {
     /// The guide for a destination when a complete store for the chosen embedder is already in
     /// Caches; `nil` otherwise. Never fetches or embeds, so Siri does not wait for a download.
     func cachedGuide(for destination: String, openAIKey: String? = nil) async throws -> TravelGuide? {
-        let selection = try await selectEmbedder(openAIKey: openAIKey)
+        let selection: Selection
+        do {
+            selection = try await selectEmbedder(openAIKey: openAIKey)
+        } catch TravelGuideError.embedderUnavailable {
+            return await storedSpotlightGuide(
+                in: cityDirectory(for: destination).appendingPathComponent(Self.spotlightCacheKey, isDirectory: true)
+            )
+        }
         let directory = cityDirectory(for: destination)
             .appendingPathComponent(selection.cacheKey, isDirectory: true)
         return await storedGuide(in: directory, selection: selection)
@@ -627,7 +904,7 @@ actor TravelGuideLibrary {
     /// The store in `directory` when its manifest matches this format and embedder and it holds
     /// entries.
     private func storedGuide(in directory: URL, selection: Selection) async -> TravelGuide? {
-        guard let manifest = readManifest(at: directory.appendingPathComponent("guide.json")),
+        guard let manifest = readManifest(Manifest.self, at: directory.appendingPathComponent("guide.json")),
               manifest.formatVersion == Self.indexFormatVersion,
               manifest.embeddingModel == selection.embedder.modelIdentifier,
               let store = try? RTSRAGFileStore(directory: directory),
@@ -640,7 +917,7 @@ actor TravelGuideLibrary {
             sections: manifest.sections,
             embedderLabel: selection.label,
             fromCache: true,
-            runtime: RTSRAGRetrievalRuntime(embedder: selection.embedder, store: store)
+            retriever: .vector(RTSRAGRetrievalRuntime(embedder: selection.embedder, store: store))
         )
     }
 
@@ -664,17 +941,28 @@ actor TravelGuideLibrary {
         return slug.isEmpty ? "guide" : slug
     }
 
-    private func readManifest(at url: URL) -> Manifest? {
+    private func readManifest<M: Decodable>(_ type: M.Type, at url: URL) -> M? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(Manifest.self, from: data)
+        return try? decoder.decode(type, from: data)
     }
 
-    private func writeManifest(_ manifest: Manifest, to url: URL) {
+    private func writeManifest<M: Encodable>(_ manifest: M, to url: URL) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try? encoder.encode(manifest).write(to: url, options: .atomic)
     }
+}
+
+/// The first reason recorded, from any thread.
+private final class FirstReason: Sendable {
+    private let state = Mutex<String?>(nil)
+
+    func record(_ reason: String) {
+        state.withLock { if $0 == nil { $0 = reason } }
+    }
+
+    var first: String? { state.withLock { $0 } }
 }

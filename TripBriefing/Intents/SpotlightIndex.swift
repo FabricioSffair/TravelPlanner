@@ -70,6 +70,9 @@ enum SpotlightIndex {
     @MainActor private static var didSync = false
     /// Set once the manual pages this app indexed while it also held Pocket Manuals are gone.
     private static let manualPagesClearedKey = "spotlight.manualPagesCleared"
+    /// Pocket Manuals put each manual's pages under `manual.<id>`. Domains nest on ".", so
+    /// deleting "manual" removes every manual.
+    private static let legacyManualDomain = "manual"
 
     /// Indexes the trip on disk when Spotlight does not have it yet: a trip planned before this
     /// feature, or before a format change. Once per launch, however many windows call it.
@@ -80,11 +83,13 @@ enum SpotlightIndex {
         let archive = TripNotesArchive.load()
         guard UserDefaults.standard.bool(forKey: manualPagesClearedKey) else {
             // Until Pocket Manuals became its own app, this app also put manual pages in
-            // Spotlight, and tapping one now opens nothing. Clear the app's items once, then
-            // index the trip again.
+            // Spotlight, and tapping one now opens nothing. Clear those and the trip's items once,
+            // then index the trip again. Only these domains: the travel guide and trip notes
+            // the RAG fallback donates live under the bundle id and must stay.
             Task {
                 do {
-                    try await CSSearchableIndex.default().deleteAllSearchableItems()
+                    try await CSSearchableIndex.default()
+                        .deleteSearchableItems(withDomainIdentifiers: [legacyManualDomain, tripDomain])
                     UserDefaults.standard.set(true, forKey: manualPagesClearedKey)
                     AppLog.info("Old Spotlight items removed")
                 } catch {

@@ -54,7 +54,15 @@ enum ContextFallback {
     /// contain a property 'latitude'"). The model picks its arguments afresh on a retry.
     static func isBadToolCall(_ error: Error) -> Bool {
         let text = "\(error)"
-        return text.contains("ToolCallError") && text.contains("GeneratedContent")
+        return text.contains("ToolCallError") && text.contains("GeneratedContent") && !isToolCallLimit(error)
+    }
+
+    /// Whether `error` is a tool ending an agent's turn because its calls are spent: PlacesSearch
+    /// for the Local Guide, SearchTravelGuide for the Concierge, either search in the chat.
+    /// FoundationModels wraps the tool's error in a ToolCallError, so the text is checked too.
+    static func isToolCallLimit(_ error: Error) -> Bool {
+        error is PlacesSearchSession.LimitReached || error is SearchLimitReached
+            || "\(error)".contains("ToolCallLimitReached")
     }
 
     /// Whether `error` is FoundationModels failing to read the model's final answer as the output
