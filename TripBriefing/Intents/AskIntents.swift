@@ -82,6 +82,15 @@ struct TravelAssistantShortcuts: AppShortcutsProvider {
             shortTitle: "Ask About My Trip",
             systemImageName: "airplane.departure"
         )
+        AppShortcut(
+            intent: GetTripActivitiesIntent(),
+            phrases: [
+                "Get my \(.applicationName) activities",
+                "List my \(.applicationName) trip activities",
+            ],
+            shortTitle: "Get Trip Activities",
+            systemImageName: "map"
+        )
     }
 }
 

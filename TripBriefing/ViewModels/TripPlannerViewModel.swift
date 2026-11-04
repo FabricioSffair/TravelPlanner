@@ -351,6 +351,7 @@ final class TripPlannerViewModel {
         guard notes.count > 1 else { return }
         let destination = request.destination
         let days = tripDays
+        let plan = itinerary
         let library = guideLibrary
         let token = guideRunToken
         tripNotesStatus = "Indexing your briefing…"
@@ -361,7 +362,7 @@ final class TripPlannerViewModel {
                 self.tripNotes = indexed
                 self.notesTripDays = days
                 if shouldArchive {
-                    let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes)
+                    let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes, itinerary: plan)
                     archive.save()
                     SpotlightIndex.indexTrip(archive)
                 }

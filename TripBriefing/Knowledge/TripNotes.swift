@@ -315,6 +315,9 @@ struct TripNotesArchive: Codable, Sendable {
     /// "Day 1 = 2026-10-14", one per day of the trip.
     let tripDays: [String]
     let notes: [TripNote]
+    /// The Local Guide's plan, for Get Trip Activities. Nil in trips saved before it was kept,
+    /// and when the itinerary did not decode.
+    var itinerary: Itinerary?
 
     static var fileURL: URL {
         FileManager.default
