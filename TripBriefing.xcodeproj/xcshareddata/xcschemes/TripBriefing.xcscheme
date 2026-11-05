@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "7B1E5F000000000000001001"
-               BuildableName = "TripBriefing.app"
+               BuildableName = "Travel Assistant.app"
                BlueprintName = "TripBriefing"
                ReferencedContainer = "container:TripBriefing.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "7B1E5F000000000000001001"
-            BuildableName = "TripBriefing.app"
+            BuildableName = "Travel Assistant.app"
             BlueprintName = "TripBriefing"
             ReferencedContainer = "container:TripBriefing.xcodeproj">
          </BuildableReference>
@@ -62,7 +62,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "7B1E5F000000000000001001"
-            BuildableName = "TripBriefing.app"
+            BuildableName = "Travel Assistant.app"
             BlueprintName = "TripBriefing"
             ReferencedContainer = "container:TripBriefing.xcodeproj">
          </BuildableReference>

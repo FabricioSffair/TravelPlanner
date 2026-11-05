@@ -14,7 +14,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		7B1E5F00000000000000B001 /* TripBriefing.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TripBriefing.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7B1E5F00000000000000B001 /* Travel Assistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Travel Assistant.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -51,7 +51,7 @@
 		7B1E5F00000000000000F002 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				7B1E5F00000000000000B001 /* TripBriefing.app */,
+				7B1E5F00000000000000B001 /* Travel Assistant.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,7 +82,7 @@
 				7B1E5F00000000000000C004 /* RailtracksSwiftRAG */,
 			);
 			productName = TripBriefing;
-			productReference = 7B1E5F00000000000000B001 /* TripBriefing.app */;
+			productReference = 7B1E5F00000000000000B001 /* Travel Assistant.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -290,7 +290,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.railtown.TripBriefing;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Travel Assistant";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
@@ -329,7 +329,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.railtown.TripBriefing;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Travel Assistant";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
