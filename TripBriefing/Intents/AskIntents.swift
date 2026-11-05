@@ -82,6 +82,18 @@ struct TravelAssistantShortcuts: AppShortcutsProvider {
             shortTitle: "Ask About My Trip",
             systemImageName: "airplane.departure"
         )
+        // Siri asks for the search term after the phrase, as it does for the question above.
+        if #available(iOS 27, macOS 27, visionOS 27, *) {
+            AppShortcut(
+                intent: SearchTripIntent(),
+                phrases: [
+                    "Search \(.applicationName)",
+                    "Search my trip in \(.applicationName)",
+                ],
+                shortTitle: "Search My Trip",
+                systemImageName: "magnifyingglass"
+            )
+        }
     }
 }
 
