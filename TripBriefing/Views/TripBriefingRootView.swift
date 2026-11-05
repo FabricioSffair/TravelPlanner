@@ -44,6 +44,11 @@ struct TripBriefingRootView: View {
             #endif
         }
         .task { SpotlightIndex.syncAtLaunch() }
+        .onChange(of: planner.chatRequested, initial: true) { _, requested in
+            guard requested else { return }
+            planner.chatRequested = false
+            tab = .chat
+        }
         .onContinueUserActivity(CSSearchableItemActionType, perform: openSpotlightResult)
         #if os(macOS)
         .onChange(of: SpotlightIndex.requests.identifier, initial: true) { _, identifier in

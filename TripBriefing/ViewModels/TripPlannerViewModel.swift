@@ -62,6 +62,8 @@ final class TripPlannerViewModel {
     var chatMessages: [TripChatMessage] = []
     var chatDraft = ""
     var isAnswering = false
+    /// Set by an action that answers in Chat. The root view opens the tab and clears it.
+    var chatRequested = false
     /// "Indexing your briefing…", "Ready · 12 notes · on-device" or "Unavailable · reason".
     var tripNotesStatus: String?
     /// The Wikivoyage guide the chat searches, loaded on its own (cached) so the chat has it even
