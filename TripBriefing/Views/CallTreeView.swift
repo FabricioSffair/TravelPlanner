@@ -185,7 +185,7 @@ private struct StatusCircle: View {
             Circle()
                 .fill(state.callTreeTint)
                 .frame(width: 14, height: 14)
-            if case .executing = state {
+            if case .executing = state, planShowsSpinners {
                 ProgressView().controlSize(.mini)
             }
         }

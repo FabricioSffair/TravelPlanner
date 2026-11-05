@@ -9,6 +9,10 @@
 import SwiftUI
 import RailtracksSwiftUI
 
+/// False hides the Plan screen's spinners, for demo recordings. Running agents then show a
+/// static icon; finished ones still show their checkmark.
+let planShowsSpinners = false
+
 struct PlanView: View {
     @Environment(ProviderSettings.self) private var settings
     @Bindable var model: TripPlannerViewModel
@@ -119,7 +123,7 @@ struct PlanView: View {
                 model.run(settings: settings)
             } label: {
                 HStack {
-                    if model.isRunning { ProgressView().padding(.trailing, 6) }
+                    if model.isRunning, planShowsSpinners { ProgressView().padding(.trailing, 6) }
                     Text(model.isRunning ? "Briefing in progress…" : "Build my briefing")
                         .fontWeight(.semibold)
                     Spacer()
@@ -163,7 +167,7 @@ struct PlanView: View {
         if model.isWriting(agent) {
             Section(title) {
                 HStack(spacing: .spacingMD) {
-                    ProgressView().controlSize(.small)
+                    if planShowsSpinners { ProgressView().controlSize(.small) }
                     Text("Writing the \(title.lowercased())…")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -246,7 +250,11 @@ private struct TrackRow: View {
         case .queued:
             Image(systemName: "clock").foregroundStyle(.secondary)
         case .running:
-            ProgressView().controlSize(.small)
+            if planShowsSpinners {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "circle.dotted").foregroundStyle(.tint)
+            }
         case .done:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed(let message):
