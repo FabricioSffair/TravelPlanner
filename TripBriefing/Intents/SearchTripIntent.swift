@@ -12,6 +12,8 @@ import AppIntents
 @available(iOS 27, macOS 27, visionOS 27, *)
 @AppIntent(schema: .system.searchInApp)
 struct SearchTripIntent: ShowInAppSearchResultsIntent {
+    /// Shortcuts lists actions by title, and the schema does not provide one.
+    static let title: LocalizedStringResource = "Search My Trip"
     static let searchScopes: [StringSearchScope] = [.general]
 
     var criteria: StringSearchCriteria
