@@ -13,7 +13,16 @@ struct TripRequest: Sendable {
     var notes: String
     var homeLanguage: String
 
-    static let dateFormatter = OpenMeteoClient.dateFormatter
+    /// In the local time zone, because the form's dates are local days. In UTC, a date picked
+    /// in the evening in Brazil reads as the next day.
+    static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     var startString: String { Self.dateFormatter.string(from: startDate) }
     var endString: String { Self.dateFormatter.string(from: endDate) }

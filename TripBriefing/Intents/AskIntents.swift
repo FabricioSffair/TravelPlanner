@@ -62,7 +62,10 @@ struct AskTravelAssistantIntent: AppIntent {
             if message.isError {
                 return IntentAnswer.Reply("Travel Assistant could not answer: \(message.text)")
             }
-            return IntentAnswer.Reply(message.text, sources: message.sources)
+            return IntentAnswer.Reply(
+                CalendarDates.normalized(message.text, tripDays: planner.chatTripDays),
+                sources: message.sources
+            )
         }
     }
 }
@@ -81,6 +84,15 @@ struct TravelAssistantShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Ask About My Trip",
             systemImageName: "airplane.departure"
+        )
+        AppShortcut(
+            intent: GetTripActivitiesIntent(),
+            phrases: [
+                "Get my \(.applicationName) activities",
+                "List my \(.applicationName) trip activities",
+            ],
+            shortTitle: "Get Trip Activities",
+            systemImageName: "map"
         )
     }
 }
@@ -133,12 +145,21 @@ enum IntentAnswer {
     /// The text as the action's value and on screen, and without Markdown as the spoken dialog.
     @MainActor
     static func reply(_ reply: Reply) -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView {
-        .result(
-            value: reply.text,
-            dialog: IntentDialog(stringLiteral: spoken(reply.text)),
-            view: IntentAnswerView(text: reply.text, sources: reply.sources)
+        // Temporary test: which part of the result does Siri use for a follow-up request? Only
+        // the part picked in Settings holds the answer. Source labels hold dates, so they go too.
+        let field = UserDefaults.standard.string(forKey: fieldTestKey) ?? "all"
+        func text(_ name: String) -> String {
+            field == "all" || field == name ? reply.text : "Your answer is ready in Travel Assistant."
+        }
+        return .result(
+            value: text("value"),
+            dialog: IntentDialog(stringLiteral: spoken(text("dialog"))),
+            view: IntentAnswerView(text: text("view"), sources: field == "all" ? reply.sources : [])
         )
     }
+
+    /// Temporary test: the part of the result that holds the answer.
+    static let fieldTestKey = "siriFieldTest"
 
     /// Markdown as plain sentences: no heading or list markers, no emphasis, links as their text.
     static func spoken(_ markdown: String) -> String {

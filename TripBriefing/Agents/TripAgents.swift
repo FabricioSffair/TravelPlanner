@@ -230,8 +230,9 @@ enum TripAgents {
             questions such as "and in the evening?". Search again for every new question, even one \
             asked before, and never repeat an earlier answer from the conversation. Answer in two to \
             four plain sentences, only from the search results, and name the day, part of the briefing or guide section you used. \
-            Keep numbers, dates and place names exactly as the results give them. If the results do \
-            not answer the question, say so. Do not guess.
+            Keep numbers and place names exactly as the results give them. Write each date in full, \
+            as in "November 12, 2026". When asked when or where, give the date and the town or city. \
+            If the results do not answer the question, say so. Do not guess.
             """
         )
     }

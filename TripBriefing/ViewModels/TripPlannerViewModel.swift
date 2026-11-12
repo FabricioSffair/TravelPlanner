@@ -219,7 +219,7 @@ final class TripPlannerViewModel {
                 ]) { current, _ in current })
                 self?.errorMessage = ContextFallback.isContextOverflow(error)
                     ? "\(error)\n\(overflowHint)"
-                    : "\(error)"
+                    : ContextFallback.failureMessage(error)
             }
             self?.collectGuideSources()
             // Also after a failure: the sections that did finish (say, weather and itinerary
@@ -353,6 +353,7 @@ final class TripPlannerViewModel {
         guard notes.count > 1 else { return }
         let destination = request.destination
         let days = tripDays
+        let plan = itinerary
         let library = guideLibrary
         let token = guideRunToken
         tripNotesStatus = "Indexing your briefing…"
@@ -363,7 +364,7 @@ final class TripPlannerViewModel {
                 self.tripNotes = indexed
                 self.notesTripDays = days
                 if shouldArchive {
-                    let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes)
+                    let archive = TripNotesArchive(destination: destination, tripDays: days, notes: notes, itinerary: plan)
                     archive.save()
                     SpotlightIndex.indexTrip(archive)
                 }
@@ -417,7 +418,7 @@ final class TripPlannerViewModel {
             return nil
         }
 
-        let history = chatMessages.historyPrompt()
+        let history = chatMessages.historyPrompt(includesAnswers: !settings.agentsOnDevice)
         chatMessages.append(TripChatMessage(role: .user, text: question))
         if text == nil { chatDraft = "" }
         let reply = TripChatMessage(role: .assistant, text: "", model: settings.agentLLMProvider.callTreeLabel)
@@ -430,7 +431,7 @@ final class TripPlannerViewModel {
         let guideCollector = answerGuideCollector
         let notes = tripNotes
         let guide = chatGuide
-        let days = notesTripDays ?? tripDays
+        let days = chatTripDays
         func assistant(on provider: RTSLLMProvider) -> RTSAgent {
             TripAgents.tripAssistant(
                 provider: provider,
@@ -493,7 +494,7 @@ final class TripPlannerViewModel {
                 AppLog.warning("Chat search limit reached", properties: chatProperties)
             } catch {
                 failed = true
-                answer = ContextFallback.isContextOverflow(error) ? "\(error)\n\(overflowHint)" : "\(error)"
+                answer = ContextFallback.isContextOverflow(error) ? "\(error)\n\(overflowHint)" : ContextFallback.failureMessage(error)
                 AppLog.error(error, message: "Chat answer failed", properties: chatProperties)
             }
             let sources = notesCollector.sourceLabels + guideCollector.sourceLabels
@@ -551,6 +552,9 @@ final class TripPlannerViewModel {
         guard let index = chatMessages.firstIndex(where: { $0.id == id }) else { return }
         change(&chatMessages[index])
     }
+
+    /// The days of the trip the chat answers about.
+    var chatTripDays: [String] { notesTripDays ?? tripDays }
 
     /// "Day 1 = 2026-10-14", one per day of the trip.
     private var tripDays: [String] {

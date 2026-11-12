@@ -29,14 +29,19 @@ extension Array where Element == TripChatMessage {
     /// The last few finished exchanges as `User:` / `Assistant:` lines, newest kept, capped so the
     /// on-device prompt stays small. Notices, errors and a pending reply are left out. Empty when
     /// there is nothing to carry over.
-    func historyPrompt(maxMessages: Int = 6, maxCharacters: Int = 1500) -> String {
+    /// - Parameter includesAnswers: `false` keeps only the user's questions. The on-device model
+    ///   copies earlier answers over its search results: asked about Day 4, with the Day 4 plan
+    ///   in the results, it answered "a day trip to Whistler" from the Day 3 answer above it.
+    func historyPrompt(includesAnswers: Bool = true, maxMessages: Int = 6, maxCharacters: Int = 1500) -> String {
         var lines: [String] = []
         var used = 0
         for message in reversed() where !message.isError && !message.text.isEmpty {
             let line: String
             switch message.role {
             case .user: line = "User: \(message.text)"
-            case .assistant: line = "Assistant: \(message.text)"
+            case .assistant:
+                guard includesAnswers else { continue }
+                line = "Assistant: \(message.text)"
             case .notice: continue
             }
             guard lines.count < maxMessages, used + line.count <= maxCharacters else { break }
