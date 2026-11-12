@@ -194,11 +194,27 @@ struct GetTripActivitiesIntent: AppIntent {
         return .result(value: found, dialog: IntentDialog(stringLiteral: Self.summary(found)))
     }
 
-    /// "Day 2, Morning: Lisbon Tile Museum. Day 2, Afternoon: …"
+    /// One block per day: the day on its own line, its activities under it with a bullet (•), and an
+    /// empty line between days. Siri writes its own reply from this, so the layout is only a hint.
+    ///
+    ///     Day 2, Tuesday, November 17
+    ///     • Morning: Art Gallery Tour at Art Gallery of Ontario
+    ///     • Afternoon: Walking Paths at CIBC Square Elevated Park
     private static func summary(_ activities: [TripActivityEntity]) -> String {
         guard !activities.isEmpty else { return "No planned activity matches." }
-        return activities
-            .map { "Day \($0.dayNumber), \($0.slot): \($0.place)." }
-            .joined(separator: " ")
+        var days: [(number: Int, activities: [TripActivityEntity])] = []
+        for activity in activities {
+            if days.last?.number == activity.dayNumber {
+                days[days.count - 1].activities.append(activity)
+            } else {
+                days.append((activity.dayNumber, [activity]))
+            }
+        }
+        return days.map { day in
+            let date = day.activities[0].date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+            let lines = day.activities.map { "• \($0.slot): \($0.title) at \($0.place)" }
+            return (["Day \(day.number), \(date)"] + lines).joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
     }
 }

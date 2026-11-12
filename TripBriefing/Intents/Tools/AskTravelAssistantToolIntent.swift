@@ -13,7 +13,7 @@ import AppIntents
 struct AskTripToolIntent: AppIntent {
     static let title: LocalizedStringResource = "Answer a Trip Question"
     static let description = IntentDescription(
-        "Answers a question about the user's planned trip from the trip plan. Returns the answer as plain text that gives each trip day with its full date, for example \"Thursday, November 12, 2026\", and the town or city for that day."
+        "Answers a question about the user's planned trip from the trip plan. Use it for every question about the trip, including the schedule, the itinerary and the planned activities. Returns the answer as plain text that gives each trip day with its full date, for example \"Thursday, November 12, 2026\", and the town or city for that day. When you show the result, write each day on its own line with no bullet, list that day's activities under it with a bullet character (•) instead of a dash, and leave an empty line between days."
     )
 
     @Parameter(title: "Question", description: "The question about the user's planned trip.")
@@ -24,6 +24,9 @@ struct AskTripToolIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView {
-        IntentAnswer.reply(await AskTravelAssistantIntent.answer(question, planner: planner, settings: settings))
+        IntentAnswer.reply(
+            await AskTravelAssistantIntent.answer(question, planner: planner, settings: settings),
+            keepsLayout: true
+        )
     }
 }

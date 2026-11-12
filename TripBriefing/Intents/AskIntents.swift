@@ -142,24 +142,40 @@ enum IntentAnswer {
         }
     }
 
-    /// The text as the action's value and on screen, and without Markdown as the spoken dialog.
+    /// The text as the action's value and on screen, and without Markdown as the dialog. With
+    /// `keepsLayout`, the dialog keeps the empty lines and shows list items with "•": Siri AI
+    /// writes its reply from the dialog, so a flat dialog gives a flat reply.
     @MainActor
-    static func reply(_ reply: Reply) -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView {
-        // Temporary test: which part of the result does Siri use for a follow-up request? Only
-        // the part picked in Settings holds the answer. Source labels hold dates, so they go too.
-        let field = UserDefaults.standard.string(forKey: fieldTestKey) ?? "all"
-        func text(_ name: String) -> String {
-            field == "all" || field == name ? reply.text : "Your answer is ready in Travel Assistant."
-        }
-        return .result(
-            value: text("value"),
-            dialog: IntentDialog(stringLiteral: spoken(text("dialog"))),
-            view: IntentAnswerView(text: text("view"), sources: field == "all" ? reply.sources : [])
+    static func reply(
+        _ reply: Reply,
+        keepsLayout: Bool = false
+    ) -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView {
+        .result(
+            value: reply.text,
+            dialog: IntentDialog(stringLiteral: keepsLayout ? laidOut(reply.text) : spoken(reply.text)),
+            view: IntentAnswerView(text: reply.text, sources: reply.sources)
         )
     }
 
-    /// Temporary test: the part of the result that holds the answer.
-    static let fieldTestKey = "siriFieldTest"
+    /// Markdown as plain text that keeps its layout: one empty line between blocks, "•" for each
+    /// list item, no heading markers, no emphasis, links as their text.
+    static func laidOut(_ markdown: String) -> String {
+        var lines: [String] = []
+        for line in markdown.components(separatedBy: .newlines) {
+            let line = line.trimmingCharacters(in: .whitespaces)
+                .replacing(#/^#+\s+/#, with: "")
+                .replacing(#/^[-*•]\s+/#, with: "• ")
+            if line.isEmpty, lines.last?.isEmpty ?? true { continue }
+            lines.append(line)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        let text = lines.joined(separator: "\n")
+        let inline = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )
+        return inline.map { String($0.characters) } ?? text
+    }
 
     /// Markdown as plain sentences: no heading or list markers, no emphasis, links as their text.
     static func spoken(_ markdown: String) -> String {
@@ -179,16 +195,31 @@ enum IntentAnswer {
 }
 
 /// The answer under Siri's dialog and in Shortcuts, with the sources the searches returned.
+/// Draws the answer's Markdown line by line: headings, list items with "•", paragraphs, and a gap
+/// for each empty line. `Text` alone draws inline Markdown only, so lists and line breaks were lost.
 struct IntentAnswerView: View {
     let text: String
     let sources: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text((try? AttributedString(
-                markdown: text,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            )) ?? AttributedString(text))
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(Self.lines(text).enumerated()), id: \.offset) { _, line in
+                    switch line {
+                    case .heading(let text):
+                        Text(Self.inline(text)).font(.headline)
+                    case .item(let text):
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("•")
+                            Text(Self.inline(text))
+                        }
+                    case .paragraph(let text):
+                        Text(Self.inline(text))
+                    case .gap:
+                        Color.clear.frame(height: 4)
+                    }
+                }
+            }
             .font(.callout)
             if !sources.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
@@ -202,5 +233,41 @@ struct IntentAnswerView: View {
             }
         }
         .padding()
+        // Its own background, so the text and the background follow the same appearance. Without
+        // it, a Mac in light mode drew dark text on Siri's dark panel.
+        .background(.background, in: .rect(cornerRadius: 16))
+    }
+
+    enum Line {
+        case heading(String)
+        case item(String)
+        case paragraph(String)
+        case gap
+    }
+
+    /// "**Day 1**\n- Morning: …\n\n**Day 2**" → paragraph, item, gap, paragraph. Runs of empty
+    /// lines become one gap, and none at the start or end.
+    static func lines(_ markdown: String) -> [Line] {
+        var lines: [Line] = []
+        for raw in markdown.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                if let last = lines.last, case .gap = last { continue }
+                if !lines.isEmpty { lines.append(.gap) }
+            } else if let match = line.firstMatch(of: #/^#+\s+(.+)/#) {
+                lines.append(.heading(String(match.1)))
+            } else if let match = line.firstMatch(of: #/^[-*•]\s+(.+)/#) {
+                lines.append(.item(String(match.1)))
+            } else {
+                lines.append(.paragraph(line))
+            }
+        }
+        if let last = lines.last, case .gap = last { lines.removeLast() }
+        return lines
+    }
+
+    /// Bold, italics, code and links within one line.
+    private static func inline(_ text: String) -> AttributedString {
+        try! AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
     }
 }

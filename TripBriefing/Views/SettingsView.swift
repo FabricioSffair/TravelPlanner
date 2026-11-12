@@ -107,7 +107,6 @@ struct SettingsView: View {
 /// Travel Assistant's own options.
 private struct TripBriefingSettingsSections: View {
     @Environment(ProviderSettings.self) private var settings
-    @AppStorage(IntentAnswer.fieldTestKey) private var siriFieldTest = "all"
     /// For Prepare travel guide: the destination and the guide library live with the planner.
     @Environment(TripPlannerViewModel.self) private var planner
 
@@ -144,16 +143,6 @@ private struct TripBriefingSettingsSections: View {
             }
         } footer: {
             Text("On: the destination's Wikivoyage guide is indexed while the first agents run, and the Concierge searches it before writing the practical tips. Off: the Concierge writes tips from the model alone. Useful for comparing the two. Embeddings run on-device when Apple's model is on this device, otherwise with OpenAI only when Allow OpenAI embeddings is on. Prepare travel guide indexes \(planner.request.destination) now, without running any agent.")
-        }
-
-        Section("Siri result test") {
-            Picker("Answer goes in", selection: $siriFieldTest) {
-                Text("All parts").tag("all")
-                Text("Value only").tag("value")
-                Text("Dialog only").tag("dialog")
-                Text("Snippet only").tag("view")
-                Text("No part").tag("none")
-            }
         }
 
         Section("Instruments") {

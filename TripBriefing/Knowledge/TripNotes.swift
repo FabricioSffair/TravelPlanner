@@ -88,12 +88,13 @@ struct TripNotes: Sendable {
             .filter { !namedSet.contains($0.part) }
         var hits = Array(named.prefix(topK))
         let room = topK - hits.count
-        // The Itinerary takes the last free slot, after the named parts and the best vector
-        // matches: "What should I pack?" still gets the packing list first.
+        // The whole Itinerary takes the last free slot, after the named parts and the best vector
+        // matches: "What should I pack?" still gets the packing list first. The vector matches
+        // can hold one chunk of the Itinerary, for example only Day 4: that chunk gives way to
+        // the whole note, or "full schedule" got Day 4 alone.
         if wanted.isEmpty, room > 0, !namedSet.contains(Self.itineraryPart),
-           !vector.prefix(room).contains(where: { $0.part == Self.itineraryPart }),
            let itinerary = notes.first(where: { $0.part == Self.itineraryPart }) {
-            hits += vector.prefix(room - 1)
+            hits += vector.filter { $0.part != Self.itineraryPart }.prefix(room - 1)
             hits.append(TripNoteHit(
                 content: "\(destination) trip › \(itinerary.part): \(itinerary.text)",
                 part: itinerary.part,

@@ -230,6 +230,9 @@ enum TripAgents {
             questions such as "and in the evening?". Search again for every new question, even one \
             asked before, and never repeat an earlier answer from the conversation. Answer in two to \
             four plain sentences, only from the search results, and name the day, part of the briefing or guide section you used. \
+            If the answer covers more than one day, write one block per day instead: the day and its \
+            full date on one line, each activity on its own line under it starting with "- ", and an \
+            empty line between days. \
             Keep numbers and place names exactly as the results give them. Write each date in full, \
             as in "November 12, 2026". When asked when or where, give the date and the town or city. \
             If the results do not answer the question, say so. Do not guess.
