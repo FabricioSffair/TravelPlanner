@@ -161,7 +161,7 @@ final class TripPlannerViewModel {
         }
         agentModels[TripAgents.Name.phrasebook] = phrasebookProvider.callTreeLabel
         let fallbackProvider = settings.contextFallbackProvider
-        let overflowHint = Self.overflowHint(settings: settings)
+        let overflowHint = Self.overflowHint(settings: settings, provider: cloud)
         let runProperties = [
             "App": "Travel Assistant",
             "Provider": cloud.callTreeLabel,
@@ -191,7 +191,7 @@ final class TripPlannerViewModel {
                         cloud: fallbackProvider, phrasebook: fallbackProvider, places: places
                     )
                     workflow.onFallback = { [weak self] agentName in
-                        Task { @MainActor in self?.noteFallback(of: agentName, to: fallbackProvider) }
+                        Task { @MainActor in self?.noteFallback(of: agentName, from: cloud, to: fallbackProvider) }
                     }
                 }
                 if let guideTask {
@@ -418,10 +418,13 @@ final class TripPlannerViewModel {
             return nil
         }
 
-        let history = chatMessages.historyPrompt(includesAnswers: !settings.agentsOnDevice)
+        // Read once: Private Cloud Compute's availability can change between reads.
+        let provider = settings.agentLLMProvider
+        // Only the on-device model copies earlier answers over its search results.
+        let history = chatMessages.historyPrompt(includesAnswers: provider.kind != .appleAI)
         chatMessages.append(TripChatMessage(role: .user, text: question))
         if text == nil { chatDraft = "" }
-        let reply = TripChatMessage(role: .assistant, text: "", model: settings.agentLLMProvider.callTreeLabel)
+        let reply = TripChatMessage(role: .assistant, text: "", model: provider.callTreeLabel)
         chatMessages.append(reply)
         isAnswering = true
 
@@ -444,20 +447,20 @@ final class TripPlannerViewModel {
                 tripDays: days
             )
         }
-        let agent = assistant(on: settings.agentLLMProvider)
+        let agent = assistant(on: provider)
         let fallbackProvider = settings.contextFallbackProvider
         let fallbackAgent = fallbackProvider.map { assistant(on: $0) }
-        let overflowHint = Self.overflowHint(settings: settings)
+        let overflowHint = Self.overflowHint(settings: settings, provider: provider)
         let prompt = history.isEmpty ? question : "\(history)\n\nNEW QUESTION:\n\(question)"
 
         let gateway = settings.makeGateway()
         let flow = RTSFlow(title: TripAgents.Name.assistant)
         nodeTree.attach(to: flow)
-        agentModels[TripAgents.Name.assistant] = settings.agentLLMProvider.callTreeLabel
+        agentModels[TripAgents.Name.assistant] = provider.callTreeLabel
         // Counts and sources only: the question and answer text stay out of the logs.
         let chatProperties = [
             "App": "Travel Assistant",
-            "Provider": settings.agentLLMProvider.callTreeLabel,
+            "Provider": provider.callTreeLabel,
             "HasNotes": "\(notes != nil)",
             "HasGuide": "\(guide != nil)",
             "HistoryCharacters": "\(history.count)",
@@ -474,7 +477,7 @@ final class TripPlannerViewModel {
             var failed = false
             do {
                 // On overflow, a second run of the same flow: the tree shows the failed on-device
-                // attempt, then the cloud one.
+                // or Private Cloud Compute attempt, then the cloud one.
                 answer = try await ContextFallback.run(
                     primary: { try await flow.run(agent: agent, prompt: prompt, gateway: gateway) },
                     fallback: fallbackAgent.map { fallbackAgent in
@@ -482,8 +485,8 @@ final class TripPlannerViewModel {
                     },
                     onFallback: {
                         guard let fallbackProvider else { return }
-                        self?.noteFallback(of: TripAgents.Name.assistant, to: fallbackProvider)
-                        self?.updateMessage(reply.id) { $0.model = "Apple Intelligence → \(fallbackProvider.callTreeLabel)" }
+                        self?.noteFallback(of: TripAgents.Name.assistant, from: provider, to: fallbackProvider)
+                        self?.updateMessage(reply.id) { $0.model = "\(provider.callTreeLabel) → \(fallbackProvider.callTreeLabel)" }
                     }
                 )
             } catch where ContextFallback.isToolCallLimit(error) {
@@ -570,26 +573,30 @@ final class TripPlannerViewModel {
 
     /// Shows in the call tree and the agent rows that `agentName` reran on the cloud. The
     /// Concierge's fallback brings its own cloud Packing List, so that row changes with it.
-    private func noteFallback(of agentName: String, to provider: RTSLLMProvider) {
-        AppLog.warning("On-device context full, agent reran on the cloud", properties: [
-            "Agent": agentName, "Provider": provider.callTreeLabel,
+    /// - Parameter primary: the provider whose context filled, on-device or Private Cloud Compute.
+    private func noteFallback(of agentName: String, from primary: RTSLLMProvider, to provider: RTSLLMProvider) {
+        AppLog.warning("Context full, agent reran on the cloud", properties: [
+            "Agent": agentName, "From": primary.callTreeLabel, "Provider": provider.callTreeLabel,
         ])
+        let context = primary.kind == .appleAI ? "on-device" : primary.callTreeLabel
         var names = [agentName]
         if agentName == TripAgents.Name.concierge { names.append(TripAgents.Name.packing) }
         for name in names {
-            agentModels[name] = "Apple Intelligence → \(provider.callTreeLabel)"
+            agentModels[name] = "\(primary.callTreeLabel) → \(provider.callTreeLabel)"
             if let index = tracks.firstIndex(where: { $0.id == name }) {
-                tracks[index].detail = "on-device context full · reran on \(provider.callTreeLabel)"
+                tracks[index].detail = "\(context) context full · reran on \(provider.callTreeLabel)"
             }
         }
     }
 
     /// What to add to a context-overflow error when no fallback ran.
-    static func overflowHint(settings: ProviderSettings) -> String {
+    /// - Parameter provider: the provider whose context filled.
+    static func overflowHint(settings: ProviderSettings, provider: RTSLLMProvider) -> String {
+        let model = provider.kind == .appleAI ? "The on-device model" : provider.callTreeLabel
         if !settings.fallsBackWhenContextFull {
-            return "The on-device model ran out of room. Turn on cloud fallback in Settings to rerun that agent on \(settings.cloudProvider.title)."
+            return "\(model) ran out of room. Turn on cloud fallback in Settings to rerun that agent on \(settings.cloudProvider.title)."
         }
-        return "The on-device model ran out of room. Add a \(settings.cloudProvider.title) API key in Settings to rerun that agent on the cloud."
+        return "\(model) ran out of room. Add a \(settings.cloudProvider.title) API key in Settings to rerun that agent on the cloud."
     }
 
     // MARK: - Wiring
@@ -621,6 +628,7 @@ final class TripPlannerViewModel {
             // The section itself comes from the workflow's `onAgentResult`.
             tracks[index].status = .done
         case .failed(let message): tracks[index].status = .failed(message)
+        case .cancelled: tracks[index].status = .failed("cancelled")
         }
     }
 

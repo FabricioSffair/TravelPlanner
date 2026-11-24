@@ -52,6 +52,7 @@ extension RTSLLMProvider {
     var callTreeLabel: String {
         switch self {
         case .appleAI: "Apple Intelligence"
+        case .privateCloudCompute: "Private Cloud Compute"
         case .anthropic(let model): model
         case .gemini(let model, _): model
         case .openAI(let model): model
@@ -218,6 +219,7 @@ private extension RTSNodeStatus.State {
         case .executing: .blue
         case .completed: .green
         case .failed: .red
+        case .cancelled: .orange
         }
     }
 }

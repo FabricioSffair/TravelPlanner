@@ -5,8 +5,11 @@
 //  When an on-device agent's prompt outgrows Apple Intelligence's context
 //  window (4,096 tokens on iOS 26, 8,192 on 27), FoundationModels throws and the
 //  SDK passes the error up unchanged. These helpers retry that one agent on the
-//  cloud provider instead of failing the run. Passing on-device failures get the
-//  same treatment after a few more tries. Any other error is rethrown as is.
+//  cloud provider instead of failing the run. Private Cloud Compute's window is
+//  32,768 tokens, so it overflows far less often, and gets the same treatment.
+//  Passing on-device failures get the same treatment after a few more tries.
+//  The Private Cloud Compute daily limit is never retried or sent to the cloud:
+//  the run fails and says when the limit resets. Any other error is rethrown as is.
 //
 //  The SDK has no fallback of its own; this is the app-side version of what an
 //  `RTSAgent(..., fallback:)` could do inside the gateway.
@@ -84,6 +87,24 @@ enum ContextFallback {
         return text.contains("decodingFailure") || text.contains("Failed to convert text into")
     }
 
+    /// The SDK error behind `error`: `error` itself, or the node's error when a run stopped under
+    /// `endOnError`.
+    private static func rtsError(in error: Error) -> RTSError? {
+        guard let rtsError = error as? RTSError else { return nil }
+        if case .runTerminated(.endOnError(_, let underlying), _) = rtsError,
+           let inner = Self.rtsError(in: underlying) {
+            return inner
+        }
+        return rtsError
+    }
+
+    /// Whether `error` is the user's daily Private Cloud Compute limit. Never retried and never
+    /// sent to the fallback: another request now would fail the same way.
+    static func isQuotaLimit(_ error: Error) -> Bool {
+        if case .quotaLimitReached = rtsError(in: error) { return true }
+        return false
+    }
+
     /// Whether `error` is the on-device model refusing a request because the app made too many.
     /// The typed case moved to `LanguageModelError` on iOS 27, so the text covers both.
     static func isRateLimited(_ error: Error) -> Bool {
@@ -102,16 +123,42 @@ enum ContextFallback {
         isRateLimited(error) || isTokenGenerationFailure(error)
     }
 
-    /// What the user reads when a run fails: a plain sentence for the on-device failures that the
-    /// tries did not clear, or the error itself.
+    /// What the user reads when a run fails: a plain sentence for the Private Cloud Compute limit,
+    /// a stopped run and the on-device failures that the tries did not clear, or the error itself.
     static func failureMessage(_ error: Error) -> String {
+        switch rtsError(in: error) {
+        case .quotaLimitReached(_, let resetDate, _):
+            return quotaLimitMessage(resetDate: resetDate)
+        case .missingEntitlement:
+            return "This build of Travel Assistant cannot use Private Cloud Compute. Choose another engine in Settings."
+        case .runTerminated(.cancelled, _):
+            return "The run was cancelled."
+        case .runTerminated(.timeout(let seconds), _):
+            return "The run took longer than \(Int(seconds)) seconds and was stopped."
+        case .runTerminated(.endOnError(let nodeName, let underlying), _):
+            return "\(nodeName) failed: \(failureMessage(underlying))"
+        default:
+            break
+        }
         if isRateLimited(error) {
-            return "Apple's on-device model is busy. Try again in a moment."
+            return "Apple's model is busy. Try again in a moment."
         }
         if isTokenGenerationFailure(error) {
             return "Apple's on-device model could not answer. Try again in a moment."
         }
         return "\(error)"
+    }
+
+    /// "The daily Private Cloud Compute limit is reached", with the reset time when the system
+    /// gives one: the time alone today, the date and time on a later day.
+    static func quotaLimitMessage(resetDate: Date?) -> String {
+        let limit = "The daily Private Cloud Compute limit is reached."
+        let choose = "Choose another engine in Settings to keep going."
+        guard let resetDate else { return "\(limit) \(choose)" }
+        let when = Calendar.current.isDateInToday(resetDate)
+            ? resetDate.formatted(date: .omitted, time: .shortened)
+            : resetDate.formatted(date: .abbreviated, time: .shortened)
+        return "\(limit) It resets at \(when). \(choose)"
     }
 
     /// Tries after the first one for an on-device failure that can pass.
@@ -152,6 +199,8 @@ enum ContextFallback {
         do {
             do {
                 return try await primary()
+            } catch where isQuotaLimit(error) {
+                throw error
             } catch where isBadToolCall(error) {
                 AppLog.warning("Malformed tool call, agent run again", properties: ["Error": shortError(error)])
                 return try await primary()
@@ -161,6 +210,8 @@ enum ContextFallback {
             } catch where isTransientModelFailure(error) {
                 return try await retryAfterTransientFailure(error, primary: primary)
             }
+        } catch where isQuotaLimit(error) {
+            throw error
         } catch where isContextOverflow(error) {
             guard let fallback else {
                 AppLog.warning("On-device context full and no cloud fallback, agent run again on-device", properties: ["Error": shortError(error)])

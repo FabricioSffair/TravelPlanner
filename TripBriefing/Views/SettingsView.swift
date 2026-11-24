@@ -14,9 +14,13 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("Run agents on Apple Intelligence", isOn: $settings.agentsOnDevice)
+                    Picker("Run agents on", selection: engineSelection) {
+                        ForEach(AgentEngine.selectable) { engine in
+                            Text(engine.title).tag(engine)
+                        }
+                    }
                     Toggle("Fall back to \(settings.cloudProvider.title) when the context is full", isOn: $settings.fallsBackWhenContextFull)
-                        .disabled(!settings.agentsOnDevice)
+                        .disabled(engineSelection.wrappedValue == .cloud)
                 } footer: {
                     Text(agentsFooter)
                 }
@@ -69,25 +73,43 @@ struct SettingsView: View {
         }
     }
 
+    /// The stored engine, or on-device when this build does not list it: Private Cloud Compute
+    /// chosen in the other app target, which shares these settings. Reading never rewrites it.
+    private var engineSelection: Binding<AgentEngine> {
+        Binding(
+            get: { settings.agentEngine.isInThisBuild ? settings.agentEngine : .onDevice },
+            set: { settings.agentEngine = $0 }
+        )
+    }
+
     private var agentsFooter: String {
-        let status = ProviderSettings.onDeviceStatusText
-        guard settings.agentsOnDevice else {
-            return "Off: the agents run on the cloud provider below. \(status)"
+        switch engineSelection.wrappedValue {
+        case .cloud:
+            return "Every agent runs on the cloud provider below. \(ProviderSettings.onDeviceStatusText)"
+        case .onDevice:
+            return "Every agent runs on-device. The Sign Translator still uses the cloud provider, because the on-device model ignores images. \(ProviderSettings.onDeviceStatusText)"
+                + (ProviderSettings.onDeviceAvailable ? "" : " Runs cannot start until it is available.")
+                + " " + fallbackNote(context: "on-device")
+        case .privateCloudCompute:
+            let status = ProviderSettings.privateCloudComputeStatusText
+            let unavailable = ProviderSettings.privateCloudComputeAvailable
+                ? ""
+                : " Until it is available, the agents run on-device with Apple Intelligence."
+            return "The agents run on Apple's Private Cloud Compute; the phrasebook can stay on-device (below). It needs a network connection, and each request counts against your daily Private Cloud Compute limit. The Sign Translator still uses the cloud provider. \(status)\(unavailable) "
+                + fallbackNote(context: "Private Cloud Compute")
         }
-        return "On: every agent runs on-device. The Sign Translator still uses the cloud provider, because the on-device model ignores images. \(status)"
-            + (ProviderSettings.onDeviceAvailable ? "" : " Runs cannot start until it is available.")
-            + " " + fallbackNote
     }
 
     /// What the fallback switch does, and whether it can act right now.
-    private var fallbackNote: String {
+    /// - Parameter context: whose context window fills, "on-device" or "Private Cloud Compute".
+    private func fallbackNote(context: String) -> String {
         guard settings.fallsBackWhenContextFull else {
-            return "Cloud fallback is off: an agent whose prompt outgrows the on-device context window fails the run."
+            return "Cloud fallback is off: an agent whose prompt outgrows the \(context) context window fails the run."
         }
         let provider = settings.cloudProvider.title
         return settings.hasCloudKey
-            ? "When one agent's prompt outgrows the on-device context window, that agent alone reruns on \(provider), and the call tree shows it."
-            : "Cloud fallback needs a \(provider) API key; without one, an agent whose prompt outgrows the on-device context window fails the run."
+            ? "When one agent's prompt outgrows the \(context) context window, that agent alone reruns on \(provider), and the call tree shows it."
+            : "Cloud fallback needs a \(provider) API key; without one, an agent whose prompt outgrows the \(context) context window fails the run."
     }
 
     private var railtownFooter: String {
@@ -98,9 +120,9 @@ struct SettingsView: View {
     }
 
     private var cloudFooter: String {
-        settings.agentsOnDevice
-            ? "Used by the Sign Translator."
-            : "Used by Weather Scout, Local Guide, Concierge, Packing List and the translator."
+        settings.resolvedAgentEngine == .cloud
+            ? "Used by Weather Scout, Local Guide, Concierge, Packing List and the translator."
+            : "Used by the Sign Translator."
     }
 }
 
@@ -114,11 +136,14 @@ private struct TripBriefingSettingsSections: View {
         @Bindable var settings = settings
         Section {
             Toggle("Phrasebook on-device", isOn: $settings.phrasebookOnDevice)
-                .disabled(!ProviderSettings.onDeviceAvailable || settings.agentsOnDevice)
+                .disabled(!ProviderSettings.onDeviceAvailable || settings.resolvedAgentEngine == .onDevice)
         } footer: {
-            if settings.agentsOnDevice {
+            switch settings.resolvedAgentEngine {
+            case .onDevice:
                 Text("The phrasebook runs on-device with the other agents.")
-            } else {
+            case .privateCloudCompute:
+                Text(ProviderSettings.onDeviceStatusText + (ProviderSettings.onDeviceAvailable ? " On: one Private Cloud Compute request less per briefing." : " The phrasebook runs on Private Cloud Compute."))
+            case .cloud:
                 Text(ProviderSettings.onDeviceStatusText + (ProviderSettings.onDeviceAvailable ? "" : " The phrasebook falls back to the cloud provider."))
             }
         }

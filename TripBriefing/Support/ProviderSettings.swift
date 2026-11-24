@@ -2,8 +2,9 @@
 //  ProviderSettings.swift
 //  TripBriefing
 //
-//  Whether the agents run on-device with Apple Intelligence or on a cloud
-//  provider, where the keys live, and whether embeddings may use OpenAI.
+//  Whether the agents run on-device with Apple Intelligence, on Private Cloud
+//  Compute or on a cloud provider, where the keys live, and whether embeddings
+//  may use OpenAI.
 //
 
 import Foundation
@@ -13,8 +14,34 @@ import RailtracksSwift
 import FoundationModels
 #endif
 
+/// Where the agents run. Stored as the user's choice; ``ProviderSettings/resolvedAgentEngine`` is
+/// what a run uses.
+enum AgentEngine: String, CaseIterable, Identifiable {
+    case onDevice, privateCloudCompute, cloud
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .onDevice: "Apple Intelligence (on device)"
+        case .privateCloudCompute: "Private Cloud Compute"
+        case .cloud: "Cloud provider"
+        }
+    }
+
+    /// Whether this build lists the engine. Private Cloud Compute only in the target with the
+    /// `com.apple.developer.private-cloud-compute` entitlement: a signed app without it crashes on
+    /// its first request.
+    var isInThisBuild: Bool {
+        self != .privateCloudCompute || ProviderSettings.privateCloudComputeInThisBuild
+    }
+
+    /// The Settings picker's rows, in display order.
+    static var selectable: [AgentEngine] { allCases.filter(\.isInThisBuild) }
+}
+
 /// In display order: the Settings picker and key fields list them as declared. Apple
-/// Intelligence, which needs no key, sits above them as its own switch.
+/// Intelligence and Private Cloud Compute, which need no key, sit above them as agent engines.
 enum CloudProvider: String, CaseIterable, Identifiable {
     case anthropic, gemini, openAI
 
@@ -57,7 +84,10 @@ final class ProviderSettings {
     private static let providerDefaultsKey = "cloudProvider"
     private static let onDeviceDefaultsKey = "phrasebookOnDevice"
     private static let groundingDefaultsKey = "groundsTipsInWikivoyage"
+    /// Before the engine choice: `true` meant on-device, `false` the cloud provider. Read once,
+    /// when `agentEngineDefaultsKey` is not set.
     private static let agentsOnDeviceDefaultsKey = "agentsOnDevice"
+    private static let agentEngineDefaultsKey = "agentEngine"
     private static let cloudEmbeddingsDefaultsKey = "allowsCloudEmbeddings"
     private static let contextFallbackDefaultsKey = "fallsBackWhenContextFull"
 
@@ -65,16 +95,28 @@ final class ProviderSettings {
         didSet { UserDefaults.standard.set(cloudProvider.rawValue, forKey: Self.providerDefaultsKey) }
     }
 
-    /// Run every agent on Apple Intelligence. When the model is unavailable, runs refuse to start
-    /// and say why. The one cloud fallback is ``fallsBackWhenContextFull``, and the call tree
-    /// shows it. The Sign Translator stays on the cloud provider, because the on-device model
-    /// ignores images.
-    var agentsOnDevice: Bool {
-        didSet { UserDefaults.standard.set(agentsOnDevice, forKey: Self.agentsOnDeviceDefaultsKey) }
+    /// Where the user chose to run every agent. Both app targets share these defaults, so the
+    /// choice can be Private Cloud Compute in a build without it: runs read
+    /// ``resolvedAgentEngine``, and the choice itself is never rewritten. With Apple Intelligence,
+    /// runs refuse to start when the model is unavailable and say why. The one cloud fallback is
+    /// ``fallsBackWhenContextFull``, and the call tree shows it. The Sign Translator stays on the
+    /// cloud provider, because the on-device model ignores images.
+    var agentEngine: AgentEngine {
+        didSet { UserDefaults.standard.set(agentEngine.rawValue, forKey: Self.agentEngineDefaultsKey) }
     }
 
-    /// With on-device agents: when one agent's prompt outgrows the on-device context window, run
-    /// that agent again on the cloud provider instead of failing the run. Needs that provider's key.
+    /// What runs use: the chosen engine, except Private Cloud Compute when this build lacks it or
+    /// the system says it is unavailable, which runs on-device instead.
+    var resolvedAgentEngine: AgentEngine {
+        if agentEngine == .privateCloudCompute && !Self.privateCloudComputeAvailable {
+            return .onDevice
+        }
+        return agentEngine
+    }
+
+    /// With on-device or Private Cloud Compute agents: when one agent's prompt outgrows the
+    /// model's context window, run that agent again on the cloud provider instead of failing the
+    /// run. Needs that provider's key.
     var fallsBackWhenContextFull: Bool {
         didSet { UserDefaults.standard.set(fallsBackWhenContextFull, forKey: Self.contextFallbackDefaultsKey) }
     }
@@ -85,7 +127,8 @@ final class ProviderSettings {
         didSet { UserDefaults.standard.set(allowsCloudEmbeddings, forKey: Self.cloudEmbeddingsDefaultsKey) }
     }
 
-    /// With cloud agents, run the phrasebook agent on Apple Intelligence when the device supports it.
+    /// With cloud or Private Cloud Compute agents, run the phrasebook agent on Apple Intelligence
+    /// when the device supports it.
     var phrasebookOnDevice: Bool {
         didSet { UserDefaults.standard.set(phrasebookOnDevice, forKey: Self.onDeviceDefaultsKey) }
     }
@@ -104,7 +147,13 @@ final class ProviderSettings {
         cloudProvider = CloudProvider(rawValue: stored ?? "") ?? .anthropic
         phrasebookOnDevice = UserDefaults.standard.object(forKey: Self.onDeviceDefaultsKey) as? Bool ?? true
         groundsTipsInWikivoyage = UserDefaults.standard.object(forKey: Self.groundingDefaultsKey) as? Bool ?? true
-        agentsOnDevice = UserDefaults.standard.object(forKey: Self.agentsOnDeviceDefaultsKey) as? Bool ?? true
+        if let stored = UserDefaults.standard.string(forKey: Self.agentEngineDefaultsKey),
+           let engine = AgentEngine(rawValue: stored) {
+            agentEngine = engine
+        } else {
+            let onDevice = UserDefaults.standard.object(forKey: Self.agentsOnDeviceDefaultsKey) as? Bool ?? true
+            agentEngine = onDevice ? .onDevice : .cloud
+        }
         allowsCloudEmbeddings = UserDefaults.standard.object(forKey: Self.cloudEmbeddingsDefaultsKey) as? Bool ?? false
         fallsBackWhenContextFull = UserDefaults.standard.object(forKey: Self.contextFallbackDefaultsKey) as? Bool ?? true
         for provider in CloudProvider.allCases {
@@ -171,30 +220,59 @@ final class ProviderSettings {
     var cloudLLMProvider: RTSLLMProvider { cloudProvider.llmProvider }
 
     /// The provider for every agent except the Sign Translator.
-    var agentLLMProvider: RTSLLMProvider { agentsOnDevice ? .appleAI : cloudLLMProvider }
+    var agentLLMProvider: RTSLLMProvider { llmProvider(for: resolvedAgentEngine) }
 
-    /// The provider an on-device agent is retried on when its context overflows, or `nil` when
-    /// there is no fallback: cloud agents, the switch off, or no key for the cloud provider.
+    /// The provider an on-device or Private Cloud Compute agent is retried on when its context
+    /// overflows, or `nil` when there is no fallback: cloud agents, the switch off, or no key for
+    /// the cloud provider.
     var contextFallbackProvider: RTSLLMProvider? {
-        (agentsOnDevice && fallsBackWhenContextFull && hasCloudKey) ? cloudLLMProvider : nil
+        (resolvedAgentEngine != .cloud && fallsBackWhenContextFull && hasCloudKey) ? cloudLLMProvider : nil
     }
 
-    /// "Apple Intelligence" or the cloud provider's name.
-    var agentProviderTitle: String { agentsOnDevice ? "Apple Intelligence" : cloudProvider.title }
+    /// "Apple Intelligence", "Private Cloud Compute" or the cloud provider's name.
+    var agentProviderTitle: String {
+        switch resolvedAgentEngine {
+        case .onDevice: "Apple Intelligence"
+        case .privateCloudCompute: "Private Cloud Compute"
+        case .cloud: cloudProvider.title
+        }
+    }
 
     /// Why the agents cannot run right now, or `nil` when they can.
     var agentsUnavailableReason: String? {
-        if agentsOnDevice {
+        switch resolvedAgentEngine {
+        case .onDevice:
             return Self.onDeviceAvailable ? nil : Self.onDeviceStatusText
+        case .privateCloudCompute:
+            return nil
+        case .cloud:
+            return hasCloudKey ? nil : "Add a \(cloudProvider.title) API key in Settings first."
         }
-        return hasCloudKey ? nil : "Add a \(cloudProvider.title) API key in Settings first."
     }
 
     /// The provider the phrasebook agent should use: on-device with on-device agents, or when
-    /// allowed and available; otherwise the same cloud provider as everything else.
+    /// allowed and available; otherwise the same provider as the other agents.
     var phrasebookLLMProvider: RTSLLMProvider {
-        if agentsOnDevice { return .appleAI }
-        return (phrasebookOnDevice && Self.onDeviceAvailable) ? .appleAI : cloudLLMProvider
+        let engine = resolvedAgentEngine
+        if engine == .onDevice { return .appleAI }
+        return (phrasebookOnDevice && Self.onDeviceAvailable) ? .appleAI : llmProvider(for: engine)
+    }
+
+    /// The one place a Private Cloud Compute provider is built, and only in the target with the
+    /// entitlement. `resolvedAgentEngine` never returns `.privateCloudCompute` in the other one.
+    private func llmProvider(for engine: AgentEngine) -> RTSLLMProvider {
+        switch engine {
+        case .onDevice:
+            return .appleAI
+        case .privateCloudCompute:
+            #if PRIVATE_CLOUD_COMPUTE
+            return .privateCloudCompute()
+            #else
+            return .appleAI
+            #endif
+        case .cloud:
+            return cloudLLMProvider
+        }
     }
 
     /// The OpenAI key the indexes may embed with, or `nil` when cloud embeddings are off or no
@@ -225,5 +303,47 @@ final class ProviderSettings {
         }
         #endif
         return "Apple Intelligence needs iOS 26 or macOS 26."
+    }
+
+    /// Whether this build can reach Private Cloud Compute: the target with the entitlement, built
+    /// with the OS 27 SDK.
+    nonisolated static var privateCloudComputeInThisBuild: Bool {
+        #if PRIVATE_CLOUD_COMPUTE && compiler(>=6.4)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// Whether the agents can run on Private Cloud Compute now. Reads the system's status only;
+    /// it makes no request and spends none of the daily limit.
+    static var privateCloudComputeAvailable: Bool {
+        // XCODE26-SDK: `PrivateCloudComputeLanguageModel` exists only in the OS 27 SDK (Swift 6.4).
+        #if PRIVATE_CLOUD_COMPUTE && compiler(>=6.4)
+        if #available(iOS 27, macOS 27, *) {
+            return PrivateCloudComputeLanguageModel().availability == .available
+        }
+        #endif
+        return false
+    }
+
+    static var privateCloudComputeStatusText: String {
+        #if PRIVATE_CLOUD_COMPUTE && compiler(>=6.4)
+        if #available(iOS 27, macOS 27, *) {
+            switch PrivateCloudComputeLanguageModel().availability {
+            case .available:
+                return "Private Cloud Compute is available on this device."
+            case .unavailable(.deviceNotEligible):
+                return "Private Cloud Compute unavailable: this device is not eligible."
+            case .unavailable(.systemNotReady):
+                return "Private Cloud Compute unavailable: the system is not ready yet."
+            case .unavailable(let reason):
+                return "Private Cloud Compute unavailable: \(reason)."
+            }
+        }
+        return "Private Cloud Compute needs iOS 27 or macOS 27."
+        #else
+        return "Private Cloud Compute is not part of this build."
+        #endif
     }
 }

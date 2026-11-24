@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/RailtownAI/Conduit",
       "state" : {
-        "revision" : "32669fe8e5047c76d247f1537881171e06fa20cb",
-        "version" : "0.3.23"
+        "revision" : "d344434312a244ba0065624e2d8c691ce8e1abe5",
+        "version" : "0.3.24"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/RailtownAI/Railtracks-swift.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "0b055765c03d1589e7f892923cfe6852f77e70d8"
+        "revision" : "bfc4a53205f6f7e7f83e0334e75769651e3b986e",
+        "version" : "0.6.0"
       }
     },
     {
